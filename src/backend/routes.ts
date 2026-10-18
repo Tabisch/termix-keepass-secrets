@@ -6,17 +6,18 @@ import {
   listFolder,
   normalizeRelativePath,
 } from "./keepass/files.js";
-import type { Repository } from "./repository.js";
+import type { Database, Repository } from "./repository.js";
 import type { SecretResolver } from "./resolver.js";
 import {
   credentialIdTag,
   databaseRoot,
   SyncError,
-  UNLOCK_SECRET,
+  unlockSecret,
   type StoredUnlock,
   type Syncer,
 } from "./sync.js";
 
+const MAX_DATABASES = 50;
 const MAX_GROUPS = 200;
 const MAX_NAME_LENGTH = 1024;
 const MAX_PASSWORD_LENGTH = 10_000;
@@ -52,6 +53,18 @@ function optionalPath(value: unknown): string | null | undefined {
   return value;
 }
 
+/** The :id route parameter, or null when it isn't one. */
+function databaseIdOf(req: Request): number | null {
+  const id = Number((req.params as Record<string, string>).id);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+const notConnected = (res: Response) =>
+  res.status(404).json({
+    error: "This KeePass database is not connected",
+    code: "not_connected",
+  });
+
 export function registerRoutes(
   router: Router,
   ctx: PluginContext,
@@ -64,49 +77,48 @@ export function registerRoutes(
   const actor = () => ctx.currentActor() as string;
 
   async function status(userId: string) {
-    const connection = await repo.getConnection(userId);
     const interval =
       (await ctx.settings.get<number>("syncIntervalMinutes")) ?? 60;
-    if (!connection) {
-      return { connected: false, syncIntervalMinutes: interval };
-    }
     const items = await repo.listItems(userId);
-    return {
-      connected: true,
-      syncIntervalMinutes: interval,
-      databasePath: connection.databasePath,
-      keyFilePath: connection.keyFilePath,
-      keyFileUploaded: connection.keyFileUploaded,
-      groups: connection.groups,
-      availableGroups: connection.availableGroups,
-      removeMissing: connection.removeMissing,
-      passwordReferences: connection.passwordReferences,
-      lastSyncAt: connection.lastSyncAt,
-      lastStatus: connection.lastStatus,
-      lastError: connection.lastError,
-      lastSummary: connection.lastSummary,
-      items: items
-        .map(({ title, groupPath, credentialId, entryId, updatedAt }) => ({
-          title,
-          group: groupPath,
-          credentialId,
-          tag: credentialIdTag(entryId),
-          updatedAt,
-        }))
-        .sort((a, b) => (a.title ?? "").localeCompare(b.title ?? "")),
-    };
+    const databases = (await repo.listDatabases(userId)).map(
+      (database: Database) => ({
+        id: database.id,
+        databasePath: database.databasePath,
+        keyFilePath: database.keyFilePath,
+        keyFileUploaded: database.keyFileUploaded,
+        groups: database.groups,
+        availableGroups: database.availableGroups,
+        removeMissing: database.removeMissing,
+        passwordReferences: database.passwordReferences,
+        lastSyncAt: database.lastSyncAt,
+        lastStatus: database.lastStatus,
+        lastError: database.lastError,
+        lastSummary: database.lastSummary,
+        items: items
+          .filter((item) => item.databaseId === database.id)
+          .map(({ title, groupPath, credentialId, entryId, updatedAt }) => ({
+            title,
+            group: groupPath,
+            credentialId,
+            tag: credentialIdTag(entryId),
+            updatedAt,
+          }))
+          .sort((a, b) => (a.title ?? "").localeCompare(b.title ?? "")),
+      }),
+    );
+    return { syncIntervalMinutes: interval, databases };
   }
 
   /**
    * @openapi
    * /plugin-api/keepass-secrets/status:
    *   get:
-   *     summary: The signed-in user's KeePass database, chosen groups and imported credentials
+   *     summary: The signed-in user's KeePass databases, their chosen groups and imported credentials
    *     tags:
    *       - KeePass
    *     responses:
    *       200:
-   *         description: Whether a database is connected, and if so what is synced and how the last sync went. Each imported credential lists its stable keepass:<uuid> tag
+   *         description: Every database the user connected, what is synced from it and how its last sync went. Each imported credential lists its stable keepass:<uuid> tag
    */
   router.get("/status", async (_req: Request, res: Response) => {
     res.json(await status(actor()));
@@ -135,10 +147,10 @@ export function registerRoutes(
 
   /**
    * @openapi
-   * /plugin-api/keepass-secrets/connect:
+   * /plugin-api/keepass-secrets/databases:
    *   post:
-   *     summary: Connect a KeePass database
-   *     description: Opens the database to check the password, then stores the password (and an uploaded key file) encrypted for the signed-in user. Neither is ever sent back.
+   *     summary: Connect a KeePass database, or connect one again with a new password
+   *     description: Opens the database to check the password, then stores the password (and an uploaded key file) encrypted for the signed-in user. Neither is ever sent back. A path the user already connected keeps its chosen groups and gets the new password.
    *     tags:
    *       - KeePass
    *     requestBody:
@@ -164,7 +176,7 @@ export function registerRoutes(
    *       200:
    *         description: Connected. The body is the new status, with the database's groups
    *       400:
-   *         description: Missing or invalid fields, or a path outside the KeePass folder
+   *         description: Missing or invalid fields, a path outside the KeePass folder, or too many databases
    *       404:
    *         description: The file is not in the KeePass folder
    *       422:
@@ -172,7 +184,7 @@ export function registerRoutes(
    *       503:
    *         description: The KeePass folder is not set or does not exist on the server
    */
-  router.post("/connect", async (req: Request, res: Response) => {
+  router.post("/databases", async (req: Request, res: Response) => {
     const body = req.body ?? {};
     const password = typeof body.password === "string" ? body.password : "";
     const keyFilePath = optionalPath(body.keyFilePath);
@@ -220,21 +232,36 @@ export function registerRoutes(
         password,
         ...(keyFile && !source.keyFilePath ? { keyFile } : {}),
       };
-      const availableGroups = await syncer.groups(source, stored);
       const userId = actor();
-      const previous = await repo.getConnection(userId);
-      await ctx.secrets.set(UNLOCK_SECRET, JSON.stringify(stored));
-      resolver.forget(userId);
-      await repo.saveConnection(userId, {
+      const previous = await repo.findDatabaseByPath(
+        userId,
+        source.databasePath,
+      );
+      if (
+        !previous &&
+        (await repo.listDatabases(userId)).length >= MAX_DATABASES
+      ) {
+        return res.status(400).json({
+          error: `You can connect at most ${MAX_DATABASES} databases`,
+          code: "too_many",
+        });
+      }
+      const availableGroups = await syncer.groups(source, stored);
+      const values = {
         ...source,
         keyFileUploaded: Boolean(stored.keyFile),
         availableGroups,
-        // Another database's groups mean nothing here.
-        ...(previous && previous.databasePath !== source.databasePath
-          ? { groups: [] }
-          : {}),
-      });
-      ctx.log.info(`keepass connected for user ${userId}`);
+      };
+      let id: number;
+      if (previous) {
+        id = previous.id;
+        await repo.updateDatabase(userId, id, values);
+      } else {
+        id = await repo.createDatabase(userId, values);
+      }
+      await ctx.secrets.set(unlockSecret(id), JSON.stringify(stored));
+      resolver.forget(userId, id);
+      ctx.log.info(`keepass database ${id} connected for user ${userId}`);
       res.json(await status(userId));
     } catch (error) {
       return sendFailure(res, error);
@@ -243,11 +270,17 @@ export function registerRoutes(
 
   /**
    * @openapi
-   * /plugin-api/keepass-secrets/config:
+   * /plugin-api/keepass-secrets/databases/{id}/config:
    *   put:
-   *     summary: Choose which KeePass groups to import
+   *     summary: Choose which groups of a KeePass database to import
    *     tags:
    *       - KeePass
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema:
+   *           type: integer
    *     requestBody:
    *       required: true
    *       content:
@@ -272,9 +305,10 @@ export function registerRoutes(
    *       400:
    *         description: Invalid groups
    *       404:
-   *         description: KeePass is not connected
+   *         description: The user has no database with this id
    */
-  router.put("/config", async (req: Request, res: Response) => {
+  router.put("/databases/:id/config", async (req: Request, res: Response) => {
+    const id = databaseIdOf(req);
     const { groups, removeMissing, passwordReferences } = req.body ?? {};
     if (
       !Array.isArray(groups) ||
@@ -302,52 +336,95 @@ export function registerRoutes(
         .json({ error: "passwordReferences must be true or false" });
     }
     const userId = actor();
-    if (!(await repo.getConnection(userId))) {
-      return res
-        .status(404)
-        .json({ error: "KeePass is not connected", code: "not_connected" });
+    if (id === null || !(await repo.getDatabase(userId, id))) {
+      return notConnected(res);
     }
     const unique = [
       ...new Set((groups as string[]).map((name) => name.trim())),
     ];
-    await repo.saveConnection(userId, {
+    await repo.updateDatabase(userId, id, {
       groups: unique,
       ...(removeMissing !== undefined ? { removeMissing } : {}),
       ...(passwordReferences !== undefined ? { passwordReferences } : {}),
     });
     // References resolve against the chosen groups, so drop what the
     // resolver holds for the old ones.
-    resolver.forget(userId);
+    resolver.forget(userId, id);
     res.json(await status(userId));
   });
 
   /**
    * @openapi
-   * /plugin-api/keepass-secrets/groups/refresh:
+   * /plugin-api/keepass-secrets/databases/{id}/groups/refresh:
    *   post:
-   *     summary: Read the database's groups again
+   *     summary: Read a database's groups again
    *     tags:
    *       - KeePass
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema:
+   *           type: integer
    *     responses:
    *       200:
    *         description: The new status, with the database's current groups
    *       404:
-   *         description: KeePass is not connected, or the file is gone
+   *         description: The user has no database with this id, or the file is gone
    *       422:
    *         description: The stored password no longer opens the database
    */
-  router.post("/groups/refresh", async (_req: Request, res: Response) => {
+  router.post(
+    "/databases/:id/groups/refresh",
+    async (req: Request, res: Response) => {
+      const id = databaseIdOf(req);
+      const userId = actor();
+      const database = id === null ? null : await repo.getDatabase(userId, id);
+      if (!database) return notConnected(res);
+      try {
+        const availableGroups = await syncer.groups(
+          database,
+          await syncer.unlock(database.id),
+        );
+        await repo.updateDatabase(userId, database.id, { availableGroups });
+        res.json(await status(userId));
+      } catch (error) {
+        return sendFailure(res, error);
+      }
+    },
+  );
+
+  /**
+   * @openapi
+   * /plugin-api/keepass-secrets/databases/{id}/sync:
+   *   post:
+   *     summary: Sync one database's chosen groups into Termix credentials now
+   *     tags:
+   *       - KeePass
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema:
+   *           type: integer
+   *     responses:
+   *       200:
+   *         description: Synced. The body is the new status, with what changed in the database's lastSummary
+   *       404:
+   *         description: The user has no database with this id, or the file is gone
+   *       409:
+   *         description: A sync of this database is already running
+   *       422:
+   *         description: The stored password no longer opens the database
+   *       502:
+   *         description: Termix refused part of the sync. lastError has the reason
+   */
+  router.post("/databases/:id/sync", async (req: Request, res: Response) => {
+    const id = databaseIdOf(req);
+    if (id === null) return notConnected(res);
     const userId = actor();
     try {
-      const connection = await repo.getConnection(userId);
-      if (!connection) {
-        throw new SyncError("KeePass is not connected", "not_connected");
-      }
-      const availableGroups = await syncer.groups(
-        connection,
-        await syncer.unlock(),
-      );
-      await repo.saveConnection(userId, { availableGroups });
+      await syncer.run(userId, id);
       res.json(await status(userId));
     } catch (error) {
       return sendFailure(res, error);
@@ -358,54 +435,54 @@ export function registerRoutes(
    * @openapi
    * /plugin-api/keepass-secrets/sync:
    *   post:
-   *     summary: Sync the chosen groups into Termix credentials now
+   *     summary: Sync every database of the signed-in user now
+   *     description: Databases with no groups chosen are skipped. One database failing doesn't stop the others; each records its own result in lastStatus and lastError.
    *     tags:
    *       - KeePass
    *     responses:
    *       200:
-   *         description: Synced. The body is the new status, with what changed in lastSummary
-   *       404:
-   *         description: KeePass is not connected, or the file is gone
-   *       409:
-   *         description: A sync is already running
-   *       422:
-   *         description: The stored password no longer opens the database
-   *       502:
-   *         description: Termix refused part of the sync. lastError has the reason
+   *         description: The new status. failed counts the databases whose sync failed
    */
   router.post("/sync", async (_req: Request, res: Response) => {
     const userId = actor();
-    try {
-      await syncer.run(userId);
-      res.json(await status(userId));
-    } catch (error) {
-      return sendFailure(res, error);
-    }
+    const { failed } = await syncer.runAll(userId);
+    res.json({ ...(await status(userId)), failed: failed.length });
   });
 
   /**
    * @openapi
-   * /plugin-api/keepass-secrets/connect:
+   * /plugin-api/keepass-secrets/databases/{id}:
    *   delete:
-   *     summary: Disconnect the KeePass database and forget its password
+   *     summary: Disconnect a KeePass database and forget its password
    *     tags:
    *       - KeePass
    *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema:
+   *           type: integer
    *       - in: query
    *         name: removeCredentials
    *         schema:
    *           type: boolean
-   *         description: Also delete the credentials this plugin imported
+   *         description: Also delete the credentials this plugin imported from it
    *     responses:
    *       200:
-   *         description: Disconnected
+   *         description: Disconnected. The body is the new status
+   *       404:
+   *         description: The user has no database with this id
    *       502:
    *         description: An imported credential could not be deleted. Nothing was disconnected
    */
-  router.delete("/connect", async (req: Request, res: Response) => {
+  router.delete("/databases/:id", async (req: Request, res: Response) => {
+    const id = databaseIdOf(req);
     const userId = actor();
+    if (id === null || !(await repo.getDatabase(userId, id))) {
+      return notConnected(res);
+    }
     if (req.query.removeCredentials === "true") {
-      const items = await repo.listItems(userId);
+      const items = await repo.listItems(userId, id);
       if (items.length) {
         try {
           const core = await syncer.coreFor(userId);
@@ -415,10 +492,10 @@ export function registerRoutes(
         }
       }
     }
-    await ctx.secrets.delete(UNLOCK_SECRET);
-    await repo.deleteConnection(userId);
-    resolver.forget(userId);
-    ctx.log.info(`keepass disconnected for user ${userId}`);
-    res.json({ connected: false });
+    await ctx.secrets.delete(unlockSecret(id));
+    await repo.deleteDatabase(userId, id);
+    resolver.forget(userId, id);
+    ctx.log.info(`keepass database ${id} disconnected for user ${userId}`);
+    res.json(await status(userId));
   });
 }

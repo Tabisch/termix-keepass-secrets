@@ -12,10 +12,17 @@ import {
   type CoreCredentials,
   type CredentialInput,
 } from "./core-credentials.js";
-import type { GroupInfo, Repository, SyncSummary } from "./repository.js";
+import type {
+  Database,
+  GroupInfo,
+  Repository,
+  SyncSummary,
+} from "./repository.js";
 
-/** The ctx.secrets key holding the acting user's master password. */
-export const UNLOCK_SECRET = "unlock";
+/** The ctx.secrets key holding the acting user's master password for one database. */
+export function unlockSecret(databaseId: number): string {
+  return `unlock-${databaseId}`;
+}
 
 /** Where the KeePass folder is when an admin did not set one. */
 export const DEFAULT_DATABASE_ROOT = "/keepass";
@@ -54,7 +61,7 @@ export class SyncError extends Error {
   }
 }
 
-/** What ctx.secrets holds per user, as JSON. */
+/** What ctx.secrets holds per database, as JSON. */
 export interface StoredUnlock {
   password: string;
   /** An uploaded key file, base64. */
@@ -160,38 +167,43 @@ export function selectEntries(
   return selected;
 }
 
+const emptySummary = (): SyncSummary => ({
+  created: 0,
+  updated: 0,
+  unchanged: 0,
+  removed: 0,
+  skipped: 0,
+});
+
 export function createSyncer(deps: { ctx: PluginContext; repo: Repository }) {
   const { ctx, repo } = deps;
   const coreFor = (userId: string): Promise<CoreCredentials> =>
     coreCredentialsFor(ctx, userId);
-  const running = new Set<string>();
+  const running = new Set<number>();
 
-  /** Reads the acting user's master password. Must run as that user. */
-  async function unlock(): Promise<StoredUnlock> {
-    const stored = parseUnlock(await ctx.secrets.get(UNLOCK_SECRET));
+  /** Reads the acting user's master password for a database. Must run as that user. */
+  async function unlock(databaseId: number): Promise<StoredUnlock> {
+    const stored = parseUnlock(await ctx.secrets.get(unlockSecret(databaseId)));
     if (!stored) {
-      throw new SyncError("KeePass is not connected", "not_connected");
+      throw new SyncError(
+        "The master password for this database is missing. Connect it again",
+        "not_connected",
+      );
     }
     return stored;
   }
 
-  async function syncOnce(userId: string): Promise<SyncSummary> {
-    const connection = await repo.getConnection(userId);
-    if (!connection) {
-      throw new SyncError("KeePass is not connected", "not_connected");
-    }
-    const vault = await loadVault(ctx, connection, await unlock());
-    const selected = selectEntries(vault, connection.groups);
-    const summary: SyncSummary = {
-      created: 0,
-      updated: 0,
-      unchanged: 0,
-      removed: 0,
-      skipped: 0,
-    };
+  async function syncOnce(database: Database): Promise<SyncSummary> {
+    const { userId } = database;
+    const vault = await loadVault(ctx, database, await unlock(database.id));
+    const selected = selectEntries(vault, database.groups);
+    const summary = emptySummary();
 
     const imported = new Map(
-      (await repo.listItems(userId)).map((item) => [item.entryId, item]),
+      (await repo.listItems(userId, database.id)).map((item) => [
+        item.entryId,
+        item,
+      ]),
     );
     // Only ask for a Termix session when something has to change.
     const needsCore =
@@ -200,7 +212,7 @@ export function createSyncer(deps: { ctx: PluginContext; repo: Repository }) {
         ([id, { entry }]) =>
           entry.password &&
           imported.get(id)?.contentHash !==
-            hashInput(toCredentialInput(entry, connection.passwordReferences)),
+            hashInput(toCredentialInput(entry, database.passwordReferences)),
       );
     const core = needsCore ? await coreFor(userId) : null;
 
@@ -211,7 +223,7 @@ export function createSyncer(deps: { ctx: PluginContext; repo: Repository }) {
           summary.skipped += 1;
           continue;
         }
-        const input = toCredentialInput(entry, connection.passwordReferences);
+        const input = toCredentialInput(entry, database.passwordReferences);
         const contentHash = hashInput(input);
         const previous = imported.get(id);
         if (previous && previous.contentHash === contentHash) {
@@ -230,6 +242,7 @@ export function createSyncer(deps: { ctx: PluginContext; repo: Repository }) {
           summary.created += 1;
         }
         await repo.saveItem(userId, {
+          databaseId: database.id,
           entryId: id,
           credentialId,
           groupPath: group,
@@ -243,24 +256,24 @@ export function createSyncer(deps: { ctx: PluginContext; repo: Repository }) {
       // unticking it in the tab removes its credentials on purpose.
       const present = vault.groups.map((g) => g.path);
       const chosenAndGone = (path: string) =>
-        connection.groups.some(
+        database.groups.some(
           (name) =>
             inGroup(path, name) && !present.some((p) => inGroup(p, name)),
         );
       for (const [id, item] of imported) {
         if (selected.has(id)) continue;
         if (chosenAndGone(item.groupPath)) continue;
-        if (connection.removeMissing) {
+        if (database.removeMissing) {
           await core!.remove(item.credentialId);
           summary.removed += 1;
         }
-        await repo.deleteItem(userId, id);
+        await repo.deleteItem(userId, database.id, id);
       }
     } finally {
       await repo.persist();
     }
 
-    await repo.saveConnection(userId, {
+    await repo.updateDatabase(userId, database.id, {
       availableGroups: groupInfos(vault),
       lastSyncAt: new Date().toISOString(),
       lastStatus: "ok",
@@ -270,32 +283,62 @@ export function createSyncer(deps: { ctx: PluginContext; repo: Repository }) {
     return summary;
   }
 
+  /**
+   * Syncs one database. Must run as its user (a route, or inside
+   * ctx.asUser). A failure is recorded on the database and thrown.
+   */
+  async function run(userId: string, databaseId: number): Promise<SyncSummary> {
+    const database = await repo.getDatabase(userId, databaseId);
+    if (!database) {
+      throw new SyncError(
+        "This KeePass database is not connected",
+        "not_connected",
+      );
+    }
+    if (running.has(databaseId)) {
+      throw new SyncError("A sync is already running", "busy");
+    }
+    running.add(databaseId);
+    try {
+      return await syncOnce(database);
+    } catch (error) {
+      await repo
+        .updateDatabase(userId, databaseId, {
+          lastSyncAt: new Date().toISOString(),
+          lastStatus: "error",
+          lastError: error instanceof Error ? error.message : String(error),
+        })
+        .catch(() => undefined);
+      throw error;
+    } finally {
+      running.delete(databaseId);
+    }
+  }
+
   return {
     unlock,
     coreFor,
+    run,
 
-    /** Syncs one user. Must run as that user (a route, or inside ctx.asUser). */
-    async run(userId: string): Promise<SyncSummary> {
-      if (running.has(userId)) {
-        throw new SyncError("A sync is already running", "busy");
-      }
-      running.add(userId);
-      try {
-        return await syncOnce(userId);
-      } catch (error) {
-        if (!(error instanceof SyncError && error.code === "not_connected")) {
-          await repo
-            .saveConnection(userId, {
-              lastSyncAt: new Date().toISOString(),
-              lastStatus: "error",
-              lastError: error instanceof Error ? error.message : String(error),
-            })
-            .catch(() => undefined);
+    /**
+     * Syncs every database of the user, one after another. One failing
+     * database doesn't stop the others; each records its own result.
+     */
+    async runAll(
+      userId: string,
+    ): Promise<{ ok: number; failed: { id: number; error: unknown }[] }> {
+      let ok = 0;
+      const failed: { id: number; error: unknown }[] = [];
+      for (const database of await repo.listDatabases(userId)) {
+        if (!database.groups.length) continue;
+        try {
+          await run(userId, database.id);
+          ok += 1;
+        } catch (error) {
+          failed.push({ id: database.id, error });
         }
-        throw error;
-      } finally {
-        running.delete(userId);
       }
+      return { ok, failed };
     },
 
     /** Lists the database's groups, without saving anything. */

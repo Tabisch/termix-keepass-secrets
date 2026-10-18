@@ -36,24 +36,28 @@ export interface ConnectInput {
   keyFile?: string;
 }
 
-export type Status =
-  | { connected: false; syncIntervalMinutes: number }
-  | {
-      connected: true;
-      syncIntervalMinutes: number;
-      databasePath: string;
-      keyFilePath: string | null;
-      keyFileUploaded: boolean;
-      groups: string[];
-      availableGroups: GroupInfo[];
-      removeMissing: boolean;
-      passwordReferences: boolean;
-      lastSyncAt: string | null;
-      lastStatus: "ok" | "error" | null;
-      lastError: string | null;
-      lastSummary: SyncSummary | null;
-      items: ImportedCredential[];
-    };
+export interface DatabaseStatus {
+  id: number;
+  databasePath: string;
+  keyFilePath: string | null;
+  keyFileUploaded: boolean;
+  groups: string[];
+  availableGroups: GroupInfo[];
+  removeMissing: boolean;
+  passwordReferences: boolean;
+  lastSyncAt: string | null;
+  lastStatus: "ok" | "error" | null;
+  lastError: string | null;
+  lastSummary: SyncSummary | null;
+  items: ImportedCredential[];
+}
+
+export interface Status {
+  syncIntervalMinutes: number;
+  databases: DatabaseStatus[];
+  /** Only after syncing everything: how many databases failed. */
+  failed?: number;
+}
 
 type Api = TermixApp["api"];
 
@@ -62,25 +66,29 @@ export function createKeePassApi(api: Api) {
     status: async () => (await api.get<Status>("/status")).data,
     files: async () => (await api.get<FolderListing>("/files")).data,
     connect: async (input: ConnectInput) =>
-      (await api.post<Status>("/connect", input)).data,
+      (await api.post<Status>("/databases", input)).data,
     saveConfig: async (
+      id: number,
       groups: string[],
       removeMissing: boolean,
       passwordReferences: boolean,
     ) =>
       (
-        await api.put<Status>("/config", {
+        await api.put<Status>(`/databases/${id}/config`, {
           groups,
           removeMissing,
           passwordReferences,
         })
       ).data,
-    refreshGroups: async () => (await api.post<Status>("/groups/refresh")).data,
-    sync: async () => (await api.post<Status>("/sync")).data,
-    disconnect: async (removeCredentials: boolean) =>
+    refreshGroups: async (id: number) =>
+      (await api.post<Status>(`/databases/${id}/groups/refresh`)).data,
+    sync: async (id: number) =>
+      (await api.post<Status>(`/databases/${id}/sync`)).data,
+    syncAll: async () => (await api.post<Status>("/sync")).data,
+    disconnect: async (id: number, removeCredentials: boolean) =>
       (
         await api.delete<Status>(
-          `/connect${removeCredentials ? "?removeCredentials=true" : ""}`,
+          `/databases/${id}${removeCredentials ? "?removeCredentials=true" : ""}`,
         )
       ).data,
   };

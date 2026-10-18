@@ -18,9 +18,8 @@ afterEach(async () => {
   rendered = null;
 });
 
-const connected = {
-  connected: true,
-  syncIntervalMinutes: 60,
+const servers = {
+  id: 1,
   databasePath: "team/servers.kdbx",
   keyFilePath: null,
   keyFileUploaded: false,
@@ -46,6 +45,28 @@ const connected = {
   ],
 };
 
+const ops = {
+  ...servers,
+  id: 2,
+  databasePath: "ops/ops.kdbx",
+  groups: [],
+  availableGroups: [{ path: "Ops/Network", entries: 3 }],
+  lastSyncAt: null,
+  lastStatus: null,
+  lastSummary: null,
+  items: [],
+};
+
+const connected = { syncIntervalMinutes: 60, databases: [servers] };
+const both = { syncIntervalMinutes: 60, databases: [servers, ops] };
+const empty = { syncIntervalMinutes: 60, databases: [] };
+
+/** connected, with the first database changed. */
+const withServers = (changes: Partial<typeof servers>) => ({
+  ...connected,
+  databases: [{ ...servers, ...changes }],
+});
+
 const listing = {
   databases: ["team/servers.kdbx", "team/other.kdbx"],
   keyFiles: ["keys/team.keyx"],
@@ -55,10 +76,7 @@ const listing = {
 function disconnectedApi(post = vi.fn(async () => ({ data: connected }))) {
   return {
     get: vi.fn(async (path: string) => ({
-      data:
-        path === "/files"
-          ? listing
-          : { connected: false, syncIntervalMinutes: 60 },
+      data: path === "/files" ? listing : empty,
     })),
     post,
   };
@@ -89,7 +107,7 @@ describe(`${manifest.id} activate`, () => {
     fireEvent.click(screen.getByText("keys/team.keyx"));
     fireEvent.click(screen.getByText(locales.connect.submit));
     await waitFor(() =>
-      expect(post).toHaveBeenCalledWith("/connect", {
+      expect(post).toHaveBeenCalledWith("/databases", {
         databasePath: "team/servers.kdbx",
         password: "",
         keyFilePath: "keys/team.keyx",
@@ -147,10 +165,9 @@ describe(`${manifest.id} activate`, () => {
 
   it("saves the chosen groups", async () => {
     const put = vi.fn(async () => ({
-      data: {
-        ...connected,
+      data: withServers({
         groups: ["Passwords/Servers", "Passwords/Personal"],
-      },
+      }),
     }));
     rendered = await renderWithApp(plugin, {
       manifest,
@@ -161,7 +178,7 @@ describe(`${manifest.id} activate`, () => {
     fireEvent.click(await screen.findByText("Passwords/Personal"));
     fireEvent.click(screen.getByText(locales.groups.save));
     await waitFor(() =>
-      expect(put).toHaveBeenCalledWith("/config", {
+      expect(put).toHaveBeenCalledWith("/databases/1/config", {
         groups: ["Passwords/Servers", "Passwords/Personal"],
         removeMissing: true,
         passwordReferences: true,
@@ -178,7 +195,7 @@ describe(`${manifest.id} activate`, () => {
     });
     rendered.renderTab("keepass", { isVisible: true });
     fireEvent.click(await screen.findByText(locales.sync.now));
-    await waitFor(() => expect(post).toHaveBeenCalledWith("/sync"));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/databases/1/sync"));
   });
 
   it("flags a chosen group that is gone from the database", async () => {
@@ -187,15 +204,41 @@ describe(`${manifest.id} activate`, () => {
       locales,
       api: {
         get: vi.fn(async () => ({
-          data: {
-            ...connected,
-            groups: ["Passwords/Servers", "Passwords/Old"],
-          },
+          data: withServers({ groups: ["Passwords/Servers", "Passwords/Old"] }),
         })),
       } as never,
     });
     rendered.renderTab("keepass", { isVisible: true });
     expect(await screen.findByText("Passwords/Old")).toBeTruthy();
     expect(screen.getByText(locales.groups.missing)).toBeTruthy();
+  });
+
+  it("shows every database, adds another and syncs them all", async () => {
+    const post = vi.fn(async () => ({ data: { ...both, failed: 0 } }));
+    rendered = await renderWithApp(plugin, {
+      manifest,
+      locales,
+      api: {
+        get: vi.fn(async (path: string) => ({
+          data: path === "/files" ? listing : both,
+        })),
+        post,
+      } as never,
+    });
+    rendered.renderTab("keepass", { isVisible: true });
+    expect(await screen.findByText("team/servers.kdbx")).toBeTruthy();
+    expect(screen.getByText("ops/ops.kdbx")).toBeTruthy();
+    expect(screen.getByText("Ops/Network")).toBeTruthy();
+    expect(screen.getByText("2 databases")).toBeTruthy();
+
+    fireEvent.click(screen.getByText(locales.databases.add));
+    expect(await screen.findByText(locales.connect.title)).toBeTruthy();
+    fireEvent.click(screen.getByText(locales.connect.cancel));
+    await waitFor(() =>
+      expect(screen.queryByText(locales.connect.title)).toBeNull(),
+    );
+
+    fireEvent.click(screen.getByText(locales.databases.syncAll));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/sync"));
   });
 });

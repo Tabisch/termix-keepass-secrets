@@ -5,9 +5,9 @@ import type { Syncer } from "./sync.js";
 const TICK_MS = 60_000;
 
 /**
- * Checks once a minute for connections due a sync, so a change to the admin
+ * Checks once a minute for databases due a sync, so a change to the admin
  * interval applies without a restart. Each sync runs as its own user.
- * Failures are recorded on the connection and never thrown, so one broken
+ * Failures are recorded on the database and never thrown, so one broken
  * account can't spend the plugin's error budget.
  */
 export function startScheduledSync(
@@ -38,16 +38,18 @@ export async function runDueSyncs(
   if (!Number.isFinite(minutes) || minutes <= 0) return 0;
 
   let ran = 0;
-  for (const connection of await repo.listConnections()) {
-    if (!connection.groups.length) continue;
-    const last = connection.lastSyncAt ? Date.parse(connection.lastSyncAt) : 0;
+  for (const database of await repo.listAllDatabases()) {
+    if (!database.groups.length) continue;
+    const last = database.lastSyncAt ? Date.parse(database.lastSyncAt) : 0;
     if (now - last < minutes * 60_000) continue;
     ran += 1;
     try {
-      await ctx.asUser(connection.userId, () => syncer.run(connection.userId));
+      await ctx.asUser(database.userId, () =>
+        syncer.run(database.userId, database.id),
+      );
     } catch (error) {
       ctx.log.warn(
-        `scheduled keepass sync failed for user ${connection.userId}: ${
+        `scheduled keepass sync failed for database ${database.id} of user ${database.userId}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );

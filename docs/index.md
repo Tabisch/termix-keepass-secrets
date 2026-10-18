@@ -1,4 +1,4 @@
-KeePass imports the entries of your KeePass database as Termix credentials and keeps them in sync. You pick the groups, and each entry becomes a password credential you can use on any host.
+KeePass imports the entries of your KeePass databases as Termix credentials and keeps them in sync. Connect as many `.kdbx` files as you need, pick the groups of each, and every entry becomes a password credential you can use on any host.
 
 ## Before you start: the KeePass folder
 
@@ -36,13 +36,15 @@ volumes:
 5. If the database needs a key file, pick one from the folder under Key file, or upload one with Key file to upload.
 6. Press Connect.
 
-Termix opens the database once to check the password and lists its groups. KDBX 3.1 and 4 files work, with AES, ChaCha20 and Argon2 (Argon2d and Argon2id).
+Termix opens the database once to check the password and lists its groups.
+
+To connect another database, press Add database and do the same. Each database has its own master password, key file, groups and settings, and shows its own sync result. Connecting a database you already have again keeps its groups and takes the new password, which is how you update a changed master password. KDBX 3.1 and 4 files work, with AES, ChaCha20 and Argon2 (Argon2d and Argon2id).
 
 The master password, and a key file you upload, are stored encrypted on the server so scheduled syncs can open the database. They are never shown again. A key file picked from the folder is read from there on each sync.
 
 ## Pick groups
 
-Tick the groups to import and press Save. Then press Sync now.
+For each database, tick the groups to import and press Save. Then press Sync now on that database, or Sync all at the top to sync every database.
 
 A group brings the groups under it. Tick the top group (`Passwords` here) to import the whole database. The recycle bin is never imported.
 
@@ -61,6 +63,8 @@ Every entry with a password becomes a credential:
 
 An entry under several chosen groups is counted for the first one you ticked. Entries without a password are skipped and counted under skipped.
 
+A copy of a database keeps the UUIDs of its entries. If you connect two copies, an entry in both is imported from each, and the two credentials share the same `keepass:<uuid>` tag.
+
 ## Keep passwords in KeePass
 
 Keep passwords in KeePass, under the groups, is on to start with. It keeps the passwords out of Termix, the way the Secret Sources plugin does for 1Password: each credential gets a reference instead of the password, like `keepass://11111111AAAA4AAA8AAA111111111111/password`. When a host using the credential connects, Termix asks this plugin for the password, and it reads it from the database file right then.
@@ -69,14 +73,14 @@ Keep passwords in KeePass, under the groups, is on to start with. It keeps the p
 - A changed password in KeePass works on the next connect, without waiting for a sync.
 - Connecting needs the database file to be in the KeePass folder and the stored master password to open it. If it can't, the connect fails and says why.
 - Only entries in the groups you import resolve. Untick a group, or disconnect, and its references stop working.
-- A reference resolves with the database of the credential's owner, also when the credential is shared.
+- A reference resolves with the databases of the credential's owner, also when the credential is shared. It names no database: the one the entry was imported from is asked first, then the owner's other databases. So it keeps working when you disconnect a database and connect it again.
 - Turn it off and press Save to store the passwords in Termix instead: the next sync writes them into the credentials, and connecting no longer needs the file.
 
 You can also type a reference into a credential or host password yourself, as long as the entry is in a group you import. The UUID may have dashes and braces, in any case.
 
 ## Keeping in sync
 
-Termix syncs every connected database on a schedule, every 60 minutes by default. Admins set the interval in Settings, under KeePass. 0 turns automatic sync off, and people press Sync now themselves.
+Termix syncs every connected database on a schedule, every 60 minutes by default, each on its own. Admins set the interval in Settings, under KeePass. 0 turns automatic sync off, and people press Sync now themselves.
 
 On each sync:
 
@@ -86,13 +90,11 @@ On each sync:
 - With Delete credentials that leave these groups on (the default), a credential whose entry left the chosen groups, or was deleted or moved to the recycle bin, is deleted from Termix. Only credentials this plugin imported are ever deleted. With it off, they stay and are no longer synced.
 - If a chosen group is gone from the database, its credentials are kept and the tab marks it Not in the database any more. That is often a renamed group: tick the new name, untick the old one and press Save.
 
-The tab shows when the last sync ran, what it changed, and why it failed if it did.
+Each database shows when its last sync ran, what it changed, and why it failed if it did. One database failing, say because its file is gone, doesn't stop the others.
 
 ## Disconnect
 
-Press Disconnect to delete the master password from Termix and keep the imported credentials, or Disconnect and delete imported credentials to remove those too. With Keep passwords in KeePass on, credentials you keep can't connect any more, since their references no longer resolve.
-
-To use another database or a new master password, disconnect and connect again. Connecting another database starts with no groups chosen.
+Each database has its own Disconnect, which deletes that database's master password from Termix and keeps the credentials imported from it, and Disconnect and delete imported credentials, which removes those too. Your other databases are not touched. With Keep passwords in KeePass on, credentials you keep can't connect any more, unless another database you connected has the same entry.
 
 ## Permissions
 
@@ -104,7 +106,7 @@ Anyone with Use KeePass can open any database in the KeePass folder they know th
 
 - The KeePass folder does not exist on the server: the share is not mounted, or the KeePass folder setting points somewhere else. Check the volume in your compose file.
 - There are no .kdbx files in the KeePass folder: the mount is empty, or the account Docker mounts it with can't read it.
-- The master password or key file does not open this database: check both. If the password was changed in KeePass, disconnect and connect again.
+- The master password or key file does not open this database: check both. If the password was changed in KeePass, press Add database and connect the same file with the new password.
 - Not a KeePass database this plugin can read: the file is a KDBX 1 (`.kdb`) file or damaged. Save it as KDBX 4 in KeePass.
 - Points outside the KeePass folder: the path is a symlink to somewhere else. Use the real file.
 - Termix refused to create a credential (403): you don't have the credentials permissions. Ask an admin.

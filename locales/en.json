@@ -8,7 +8,7 @@
   },
   "connect": {
     "title": "Connect a KeePass database",
-    "intro": "Pick a .kdbx file from the KeePass folder on the server and unlock it. Termix opens it again on every sync.",
+    "intro": "Pick a .kdbx file from the KeePass folder on the server and unlock it. Termix opens it again on every sync. Connect a database you already have to give it a new password.",
     "database": "Database",
     "databasePlaceholder": "Pick a database",
     "noDatabases": "There are no .kdbx files in the KeePass folder. Ask an admin to mount the share with your databases.",
@@ -22,20 +22,19 @@
     "keyFileUploadHint": "Stored encrypted on the server, like the password.",
     "keyFileTooBig": "That file is too big to be a key file",
     "submit": "Connect",
-    "connecting": "Connecting..."
+    "connecting": "Connecting...",
+    "cancel": "Cancel"
   },
   "account": {
-    "title": "Database",
-    "database": "File",
     "keyFile": "Key file",
     "keyFileUploaded": "Uploaded",
     "keyFileNone": "None",
     "disconnect": "Disconnect",
-    "disconnectTitle": "Disconnect KeePass?",
-    "disconnectBody": "The master password is deleted from Termix. Credentials that were imported stay unless you remove them too.",
+    "disconnectTitle": "Disconnect this database?",
+    "disconnectBody": "Its master password is deleted from Termix. Credentials imported from it stay unless you remove them too.",
     "disconnectKeep": "Disconnect",
     "disconnectRemove": "Disconnect and delete imported credentials",
-    "disconnected": "KeePass disconnected"
+    "disconnected": "Database disconnected"
   },
   "groups": {
     "title": "Groups to import",
@@ -68,16 +67,16 @@
   },
   "imported": {
     "title": "Imported credentials",
-    "empty": "Nothing imported yet. Pick groups and press Sync now."
+    "empty": "Nothing imported from this database yet. Pick groups and press Sync now."
   },
   "error": {
-    "load": "Could not load the KeePass connection",
+    "load": "Could not load your KeePass databases",
     "generic": "Something went wrong"
   },
   "permissions": {
     "use": {
       "title": "Use KeePass",
-      "description": "Connect a KeePass database and import its entries as credentials."
+      "description": "Connect KeePass databases and import their entries as credentials."
     }
   },
   "settings": {
@@ -91,5 +90,13 @@
         "description": "How often every connected database is synced. 0 turns automatic sync off, so people sync by hand."
       }
     }
+  },
+  "databases": {
+    "count_one": "{{count}} database",
+    "count_other": "{{count}} databases",
+    "add": "Add database",
+    "syncAll": "Sync all",
+    "syncAllFailed_one": "{{count}} database failed to sync. It shows why.",
+    "syncAllFailed_other": "{{count}} databases failed to sync. Each shows why."
   }
 }

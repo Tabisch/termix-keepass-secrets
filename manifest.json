@@ -13,7 +13,8 @@
   "category": "Access & Security",
   "icon": "KeyRound",
   "features": [
-    "Open a KeePass (.kdbx) database from a folder on the server, like a mounted share",
+    "Open KeePass (.kdbx) databases from a folder on the server, like a mounted share",
+    "Connect as many databases as you need, each with its own password and groups",
     "Unlock it with a master password, a key file or both",
     "Pick which groups to import, with the groups under them",
     "Entries become Termix password credentials, filed in a folder per group",

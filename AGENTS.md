@@ -41,7 +41,9 @@ Keep this section current when the plugin changes: what it does, how it is put t
 aren't obvious from the code, and anything that has bitten you before.
 
 - What it does: imports the entries in chosen KeePass groups as Termix password credentials and keeps
-  them in sync, per user, on a schedule or on demand. Modelled on Tabisch/termix-dashlane-secrets; keep
+  them in sync, per user, on a schedule or on demand. A user connects any number of databases (the
+  `databases` table, one row per user and path, enforced in code because a unique index on a long
+  path is too wide for MySQL). Everything per database: groups, options, last sync, secret, items. Modelled on Tabisch/termix-dashlane-secrets; keep
   the two alike where they can be.
 - Files come from a local folder, the admin setting `databaseRoot` (default `/keepass`), which is meant to
   be an SMB/DFS share mounted by Docker. SMB and DFS were deliberately left out of the plugin: don't add a
@@ -59,21 +61,26 @@ aren't obvious from the code, and anything that has bitten you before.
 - `sync.ts`: picks entries by group path (case-insensitive), creates, updates (recreates on 404) and
   removes credentials, and records a hash per item so unchanged entries cost nothing. Nothing from a
   chosen group that vanished from the database is removed. Folder is the entry's group without the root.
-- The per-user secret `unlock` is JSON `{ password, keyFile? }` (key file base64, only for uploads). A key
-  file picked from the folder is stored as `connections.keyFilePath` and read on every open.
-- `schedule.ts`: a one-minute tick that syncs connections older than the admin interval, each inside
+- The secret `unlock-<databaseId>` (`unlockSecret`) is JSON `{ password, keyFile? }` (key file base64,
+  only for uploads). A key file picked from the folder is stored as `databases.keyFilePath` and read on
+  every open. `POST /databases` with a path the user already has updates that row and its secret.
+- Items are unique per user, database and entry: copies of a database share UUIDs, so the same
+  `keepass:<uuid>` tag can be on one credential per database.
+- `schedule.ts`: a one-minute tick that syncs databases older than the admin interval, each inside
   `ctx.asUser`. It never throws, so a broken account can't spend the error budget.
 - Every credential carries `keepass` and `keepass:<uuid>` (`credentialIdTag`). The id tag is a public
   contract other plugins can match on, so never change its format.
-- Password references (`connections.passwordReferences`, on by default): the sync writes
+- Password references (`databases.passwordReferences`, on by default): the sync writes
   `keepass://<uuid>/password` (`passwordReference`) instead of the password, and `resolver.ts` answers the
   `keepass` scheme via `ctx.credentials.registerSecretResolver` (`auth:provide`, and the scheme must be in
   the manifest's `contributes.auth.secretSchemes`, or Termix stops the plugin on activate; the SDK mock
-  doesn't check this, a test does). Termix calls it at host resolution with the credential owner's id; it
-  reads their secret with `ctx.asUser`, opens the database, and only answers for entries in their chosen
-  groups. Opened databases are cached in memory for 30s per user and `forget` drops them on connect,
-  config change and disconnect. Never persist resolved passwords.
-- The connections column is `chosenGroups`, not `groups`: `GROUPS` is a reserved word in MySQL 8.
+  doesn't check this, a test does). Termix calls it at host resolution with the credential owner's id. The
+  reference names no database (so it survives a reconnect): it tries the database(s) the entry was
+  imported from, then the owner's other databases, reading each secret with `ctx.asUser`, and only
+  answers for entries in that database's chosen groups. Opened databases are cached in memory for 30s
+  per database and `forget(userId, databaseId?)` drops them on connect, config change and disconnect.
+  Never persist resolved passwords.
+- The databases column is `chosenGroups`, not `groups`: `GROUPS` is a reserved word in MySQL 8.
 - `json()` columns are plain text: the repository `JSON.stringify`s on write.
 - Use npm 11 to install. npm 10 crashes resolving the dev dependency peer set.
 - Releases: run the Release workflow (shared `plugin-release.yml` from Termix-Registry) from a `dev-X.Y.Z`

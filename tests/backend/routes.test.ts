@@ -45,6 +45,8 @@ let port: number;
 let root: string;
 let actor = "user-1";
 let entries: FakeEntry[];
+/** The id of the database connectAndChoose connected. */
+let dbId: number;
 
 function seedEntries() {
   entries = [
@@ -147,12 +149,16 @@ async function request(method: string, path: string, body?: unknown) {
   return { status: response.status, body: await response.json() };
 }
 
-const connect = (extra: Record<string, unknown> = {}) =>
-  request("POST", "/connect", {
-    databasePath: DB_FILE,
-    password: MASTER_PASSWORD,
-    ...extra,
-  });
+/** Connects a database, and remembers its id for db1() when it worked. */
+async function connect(extra: Record<string, unknown> = {}) {
+  const body = { databasePath: DB_FILE, password: MASTER_PASSWORD, ...extra };
+  const res = await request("POST", "/databases", body);
+  if (res.status === 200) {
+    const path = String(body.databasePath).replace(/\\/g, "/");
+    dbId = byPath(res.body, path).id;
+  }
+  return res;
+}
 
 // Most tests check the stored passwords, so they turn references off.
 async function connectAndChoose(
@@ -162,13 +168,35 @@ async function connectAndChoose(
 ) {
   const connected = await connect();
   expect(connected.status).toBe(200);
-  const config = await request("PUT", "/config", {
+  const config = await request("PUT", `/databases/${dbId}/config`, {
     groups,
     removeMissing,
     passwordReferences,
   });
   expect(config.status).toBe(200);
-  return config.body;
+  return byPath(config.body, DB_FILE);
+}
+
+/** One database from a status body. */
+function byPath(body: { databases: { databasePath: string }[] }, path: string) {
+  return body.databases.find((d) => d.databasePath === path) as any;
+}
+
+/** The connected database's part of the status. */
+async function current() {
+  return byPath((await request("GET", "/status")).body, DB_FILE);
+}
+
+/** The connected database's own routes. */
+const db1 = (suffix = "") => `/databases/${dbId}${suffix}`;
+
+/** Syncs the connected database and returns its part of the status. */
+async function sync() {
+  const res = await request("POST", db1("/sync"));
+  return {
+    status: res.status,
+    body: res.status === 200 ? byPath(res.body, DB_FILE) : res.body,
+  };
 }
 
 // By name, so the order the database lists entries in doesn't matter.
@@ -229,18 +257,17 @@ describe("the KeePass folder", () => {
 describe("connecting", () => {
   beforeEach(() => start());
 
-  it("starts disconnected", async () => {
+  it("starts with no databases", async () => {
     expect((await request("GET", "/status")).body).toEqual({
-      connected: false,
       syncIntervalMinutes: 60,
+      databases: [],
     });
   });
 
   it("opens the database, stores the password and lists the groups", async () => {
     const res = await connect();
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({
-      connected: true,
+    expect(byPath(res.body, DB_FILE)).toMatchObject({
       databasePath: DB_FILE,
       keyFilePath: null,
       keyFileUploaded: false,
@@ -254,9 +281,9 @@ describe("connecting", () => {
       ],
     });
     expect(JSON.stringify(res.body)).not.toContain(MASTER_PASSWORD);
-    expect(JSON.parse((await mock.ctx.secrets.get("unlock"))!)).toEqual({
-      password: MASTER_PASSWORD,
-    });
+    expect(JSON.parse((await mock.ctx.secrets.get(`unlock-${dbId}`))!)).toEqual(
+      { password: MASTER_PASSWORD },
+    );
   });
 
   it("accepts backslashes in the path", async () => {
@@ -274,8 +301,7 @@ describe("connecting", () => {
     const res = await connect({ password: "wrong" });
     expect(res.status).toBe(422);
     expect(res.body.code).toBe("wrong_key");
-    expect(await mock.ctx.secrets.get("unlock")).toBeNull();
-    expect((await request("GET", "/status")).body.connected).toBe(false);
+    expect((await request("GET", "/status")).body.databases).toEqual([]);
   });
 
   it("says when the file is not a KeePass database", async () => {
@@ -292,7 +318,7 @@ describe("connecting", () => {
     expect((await connect()).body.code).toBe("wrong_key");
     const res = await connect({ keyFilePath: "keys/team.keyx" });
     expect(res.status).toBe(200);
-    expect(res.body.keyFilePath).toBe("keys/team.keyx");
+    expect(byPath(res.body, DB_FILE).keyFilePath).toBe("keys/team.keyx");
   });
 
   it("opens a database with an uploaded key file and no password", async () => {
@@ -303,16 +329,16 @@ describe("connecting", () => {
       keyFile: Buffer.from(keyFile).toString("base64"),
     });
     expect(res.status).toBe(200);
-    expect(res.body.keyFileUploaded).toBe(true);
-    await request("PUT", "/config", {
+    expect(byPath(res.body, DB_FILE).keyFileUploaded).toBe(true);
+    await request("PUT", db1("/config"), {
       groups: ["Passwords/Servers"],
       passwordReferences: false,
     });
-    expect((await request("POST", "/sync")).body.lastSummary.created).toBe(2);
+    expect((await sync()).body.lastSummary.created).toBe(2);
   });
 
   it("validates what it is given", async () => {
-    expect((await request("POST", "/connect", {})).status).toBe(400);
+    expect((await request("POST", "/databases", {})).status).toBe(400);
     expect((await connect({ password: "", keyFilePath: "" })).body.code).toBe(
       "invalid_key",
     );
@@ -323,34 +349,196 @@ describe("connecting", () => {
   it("validates the group list", async () => {
     await connect();
     expect(
-      (await request("PUT", "/config", { groups: "Servers" })).status,
+      (await request("PUT", db1("/config"), { groups: "Servers" })).status,
     ).toBe(400);
-    expect((await request("PUT", "/config", { groups: [""] })).status).toBe(
-      400,
-    );
     expect(
-      (await request("PUT", "/config", { groups: ["a"], removeMissing: "yes" }))
-        .status,
+      (await request("PUT", db1("/config"), { groups: [""] })).status,
+    ).toBe(400);
+    expect(
+      (
+        await request("PUT", db1("/config"), {
+          groups: ["a"],
+          removeMissing: "yes",
+        })
+      ).status,
     ).toBe(400);
   });
 
-  it("needs a connection before groups can be chosen", async () => {
-    const res = await request("PUT", "/config", { groups: ["Passwords"] });
-    expect(res.status).toBe(404);
+  it("answers 404 for a database that isn't connected", async () => {
+    for (const path of ["/databases/999/config", "/databases/abc/config"]) {
+      const res = await request("PUT", path, { groups: ["Passwords"] });
+      expect(res.status).toBe(404);
+    }
+    expect((await request("POST", "/databases/999/sync")).status).toBe(404);
+    expect(
+      (await request("POST", "/databases/999/groups/refresh")).status,
+    ).toBe(404);
+    expect((await request("DELETE", "/databases/999")).status).toBe(404);
   });
 
-  it("forgets the chosen groups when another database is connected", async () => {
+  it("keeps the groups and takes the new password when a database is connected again", async () => {
     await connectAndChoose(["Passwords/Servers"]);
-    writeFile(root, "other.kdbx", await buildDatabase({ entries }));
-    const res = await connect({ databasePath: "other.kdbx" });
-    expect(res.body.groups).toEqual([]);
+    const first = dbId;
+    await writeDatabase({ password: "a new one" });
+    const res = await connect({ password: "a new one" });
+    expect(res.body.databases).toHaveLength(1);
+    expect(dbId).toBe(first);
+    expect(byPath(res.body, DB_FILE).groups).toEqual(["Passwords/Servers"]);
+    expect((await sync()).status).toBe(200);
   });
 
-  it("keeps each user's connection to themselves", async () => {
+  it("keeps each user's databases to themselves", async () => {
     await connectAndChoose(["Passwords/Servers"]);
     actor = "user-2";
-    expect((await request("GET", "/status")).body.connected).toBe(false);
-    expect((await request("POST", "/sync")).status).toBe(404);
+    expect((await request("GET", "/status")).body.databases).toEqual([]);
+    expect((await sync()).status).toBe(404);
+    expect((await request("PUT", db1("/config"), { groups: [] })).status).toBe(
+      404,
+    );
+    expect((await request("DELETE", db1())).status).toBe(404);
+  });
+});
+
+describe("several databases", () => {
+  beforeEach(() => start());
+
+  const OPS = "ops/ops.kdbx";
+  const OPS_ENTRY = "66666666FFFF4FFF8FFF666666666666";
+
+  async function connectOps(password = "ops password") {
+    writeFile(
+      root,
+      OPS,
+      await buildDatabase({
+        password,
+        entries: [
+          {
+            id: OPS_ENTRY,
+            group: "Network",
+            title: "switch-1",
+            username: "admin",
+            password: "pw-switch",
+          },
+        ],
+      }),
+    );
+    const res = await request("POST", "/databases", {
+      databasePath: OPS,
+      password,
+    });
+    expect(res.status).toBe(200);
+    const ops = byPath(res.body, OPS);
+    await request("PUT", `/databases/${ops.id}/config`, {
+      groups: ["Passwords/Network"],
+      passwordReferences: false,
+    });
+    return ops.id as number;
+  }
+
+  it("connects each with its own password and syncs each on its own", async () => {
+    await connectAndChoose(["Passwords/Servers"]);
+    const opsId = await connectOps();
+    expect(opsId).not.toBe(dbId);
+
+    const status = (await request("GET", "/status")).body;
+    expect(
+      status.databases.map((d: { databasePath: string }) => d.databasePath),
+    ).toEqual([DB_FILE, OPS]);
+    expect(
+      JSON.parse((await mock.ctx.secrets.get(`unlock-${opsId}`))!).password,
+    ).toBe("ops password");
+
+    await sync();
+    expect(stored().map((c) => c.name)).toEqual(["db-1", "web-1"]);
+    const res = await request("POST", `/databases/${opsId}/sync`);
+    expect(byPath(res.body, OPS).lastSummary.created).toBe(1);
+    expect(byPath(res.body, OPS).items).toEqual([
+      expect.objectContaining({
+        title: "switch-1",
+        group: "Passwords/Network",
+        tag: `keepass:${OPS_ENTRY}`,
+      }),
+    ]);
+    expect(byPath(res.body, DB_FILE).items).toHaveLength(2);
+    expect(stored().map((c) => c.name)).toEqual(["db-1", "switch-1", "web-1"]);
+  });
+
+  it("syncs them all at once, and one failing doesn't stop the others", async () => {
+    await connectAndChoose(["Passwords/Servers"]);
+    const opsId = await connectOps();
+    fs.rmSync(path.join(root, DB_FILE));
+    const res = await request("POST", "/sync");
+    expect(res.status).toBe(200);
+    expect(res.body.failed).toBe(1);
+    expect(byPath(res.body, DB_FILE).lastStatus).toBe("error");
+    expect(byPath(res.body, OPS).lastStatus).toBe("ok");
+    expect(stored().map((c) => c.name)).toEqual(["switch-1"]);
+    expect(opsId).toBeGreaterThan(0);
+  });
+
+  it("removes only what one database left behind", async () => {
+    await connectAndChoose(["Passwords/Servers"]);
+    await connectOps();
+    await request("POST", "/sync");
+    entries.splice(0, 1);
+    await writeDatabase();
+    expect((await sync()).body.lastSummary.removed).toBe(1);
+    expect(stored().map((c) => c.name)).toEqual(["db-1", "switch-1"]);
+  });
+
+  it("imports an entry from two copies of a database once from each", async () => {
+    await connectAndChoose(["Passwords/Servers"]);
+    fs.copyFileSync(path.join(root, DB_FILE), path.join(root, "copy.kdbx"));
+    const res = await request("POST", "/databases", {
+      databasePath: "copy.kdbx",
+      password: MASTER_PASSWORD,
+    });
+    const copy = byPath(res.body, "copy.kdbx");
+    await request("PUT", `/databases/${copy.id}/config`, {
+      groups: ["Passwords/Servers"],
+      passwordReferences: false,
+    });
+    await request("POST", "/sync");
+    expect(stored().map((c) => c.name)).toEqual([
+      "db-1",
+      "db-1",
+      "web-1",
+      "web-1",
+    ]);
+  });
+
+  it("disconnects one and leaves the others", async () => {
+    await connectAndChoose(["Passwords/Servers"]);
+    const opsId = await connectOps();
+    await request("POST", "/sync");
+    const res = await request(
+      "DELETE",
+      `/databases/${opsId}?removeCredentials=true`,
+    );
+    expect(res.body.databases.map((d: { id: number }) => d.id)).toEqual([dbId]);
+    expect(await mock.ctx.secrets.get(`unlock-${opsId}`)).toBeNull();
+    expect(await mock.ctx.secrets.get(`unlock-${dbId}`)).not.toBeNull();
+    expect(stored().map((c) => c.name)).toEqual(["db-1", "web-1"]);
+  });
+
+  it("resolves a reference from whichever database has the entry", async () => {
+    await connectAndChoose(["Passwords/Servers"]);
+    await connectOps();
+    const resolve = mock.auth.secretResolvers.get("keepass")!;
+    expect(await resolve("user-1", `keepass://${OPS_ENTRY}/password`)).toBe(
+      "pw-switch",
+    );
+    expect(await resolve("user-1", `keepass://${WEB}/password`)).toBe("pw-web");
+  });
+
+  it("still resolves from one database when another is broken", async () => {
+    await connectAndChoose(["Passwords/Servers"]);
+    await connectOps();
+    fs.rmSync(path.join(root, DB_FILE));
+    const resolve = mock.auth.secretResolvers.get("keepass")!;
+    expect(await resolve("user-1", `keepass://${OPS_ENTRY}/password`)).toBe(
+      "pw-switch",
+    );
   });
 });
 
@@ -359,7 +547,7 @@ describe("syncing", () => {
 
   it("imports the entries of the chosen groups and the groups under them", async () => {
     await connectAndChoose(["Passwords/Servers"]);
-    const res = await request("POST", "/sync");
+    const res = await sync();
     expect(res.status).toBe(200);
     expect(res.body.lastStatus).toBe("ok");
     expect(res.body.lastSummary).toEqual({
@@ -406,21 +594,21 @@ describe("syncing", () => {
 
   it("never imports the recycle bin, even with the root group chosen", async () => {
     await connectAndChoose(["Passwords"]);
-    const res = await request("POST", "/sync");
+    const res = await sync();
     expect(res.body.lastSummary.created).toBe(3);
     expect(stored().map((c) => c.name)).not.toContain("old");
   });
 
   it("matches group paths without caring about case", async () => {
     await connectAndChoose(["passwords/servers"]);
-    expect((await request("POST", "/sync")).body.lastSummary.created).toBe(2);
+    expect((await sync()).body.lastSummary.created).toBe(2);
   });
 
   it("leaves unchanged entries alone and asks Termix for nothing", async () => {
     await connectAndChoose(["Passwords/Servers"]);
-    await request("POST", "/sync");
+    await sync();
     const before = core.requests.length;
-    const res = await request("POST", "/sync");
+    const res = await sync();
     expect(res.body.lastSummary).toMatchObject({
       created: 0,
       updated: 0,
@@ -432,11 +620,11 @@ describe("syncing", () => {
 
   it("updates a credential when its entry changes in KeePass", async () => {
     await connectAndChoose(["Passwords/Servers"]);
-    await request("POST", "/sync");
+    await sync();
     entries[0].password = "rotated";
     entries[0].group = "Servers";
     await writeDatabase();
-    const res = await request("POST", "/sync");
+    const res = await sync();
     expect(res.body.lastSummary).toMatchObject({ updated: 1, unchanged: 1 });
     expect(stored().find((c) => c.name === "web-1")).toMatchObject({
       password: "rotated",
@@ -447,12 +635,12 @@ describe("syncing", () => {
 
   it("makes a credential again when it was deleted in Termix", async () => {
     await connectAndChoose(["Passwords/Servers"]);
-    await request("POST", "/sync");
+    await sync();
     const web = core.credentialsOf("user-1").find((c) => c.name === "web-1")!;
     core.credentials.delete(web.id);
     entries[0].password = "rotated";
     await writeDatabase();
-    const res = await request("POST", "/sync");
+    const res = await sync();
     expect(res.body.lastSummary).toMatchObject({ created: 1, updated: 0 });
     const again = core.credentialsOf("user-1").find((c) => c.name === "web-1")!;
     // A new Termix id, but the same tag, so whatever found it by tag still does.
@@ -462,14 +650,14 @@ describe("syncing", () => {
 
   it("deletes credentials whose entry left the chosen groups", async () => {
     await connectAndChoose(["Passwords/Servers", "Passwords/Personal"]);
-    await request("POST", "/sync");
+    await sync();
     expect(stored()).toHaveLength(3);
 
-    await request("PUT", "/config", {
+    await request("PUT", db1("/config"), {
       groups: ["Passwords/Servers"],
       removeMissing: true,
     });
-    const res = await request("POST", "/sync");
+    const res = await sync();
     expect(res.body.lastSummary).toMatchObject({ removed: 1, unchanged: 2 });
     expect(
       stored()
@@ -480,19 +668,19 @@ describe("syncing", () => {
 
   it("deletes credentials whose entry was deleted in KeePass", async () => {
     await connectAndChoose(["Passwords/Servers"]);
-    await request("POST", "/sync");
+    await sync();
     entries.splice(0, 1);
     await writeDatabase();
-    const res = await request("POST", "/sync");
+    const res = await sync();
     expect(res.body.lastSummary).toMatchObject({ removed: 1 });
     expect(stored().map((c) => c.name)).toEqual(["db-1"]);
   });
 
   it("keeps them, untracked, when removal is off", async () => {
     await connectAndChoose(["Passwords/Servers", "Passwords/Personal"], false);
-    await request("POST", "/sync");
-    await request("PUT", "/config", { groups: ["Passwords/Servers"] });
-    const res = await request("POST", "/sync");
+    await sync();
+    await request("PUT", db1("/config"), { groups: ["Passwords/Servers"] });
+    const res = await sync();
     expect(res.body.lastSummary.removed).toBe(0);
     expect(stored()).toHaveLength(3);
     expect(res.body.items).toHaveLength(2);
@@ -500,7 +688,7 @@ describe("syncing", () => {
 
   it("counts an entry under several chosen groups for the first one", async () => {
     await connectAndChoose(["Passwords/Servers/Linux", "Passwords/Servers"]);
-    const res = await request("POST", "/sync");
+    const res = await sync();
     expect(
       res.body.items.find((i: { title: string }) => i.title === "web-1").group,
     ).toBe("Passwords/Servers/Linux");
@@ -508,26 +696,26 @@ describe("syncing", () => {
 
   it("keeps credentials of a chosen group that vanished from the database", async () => {
     await connectAndChoose(["Passwords/Servers"]);
-    await request("POST", "/sync");
+    await sync();
     entries = entries.filter((e) => !e.group.startsWith("Servers"));
     await writeDatabase();
-    const res = await request("POST", "/sync");
+    const res = await sync();
     expect(res.body.lastSummary.removed).toBe(0);
     expect(stored()).toHaveLength(2);
 
-    await request("PUT", "/config", { groups: [] });
-    expect((await request("POST", "/sync")).body.lastSummary.removed).toBe(2);
+    await request("PUT", db1("/config"), { groups: [] });
+    expect((await sync()).body.lastSummary.removed).toBe(2);
   });
 
   it("records a failed sync and shows why", async () => {
     await connectAndChoose(["Passwords/Servers"]);
     core.failCore({ method: "POST", status: 403 });
-    const res = await request("POST", "/sync");
+    const res = await sync();
     expect(res.status).toBe(502);
     expect(res.body.error).toMatch(
       /Termix refused to create a credential \(403/,
     );
-    const status = (await request("GET", "/status")).body;
+    const status = await current();
     expect(status.lastStatus).toBe("error");
     expect(status.lastError).toMatch(/403/);
   });
@@ -535,20 +723,20 @@ describe("syncing", () => {
   it("records it when the master password changed", async () => {
     await connectAndChoose(["Passwords/Servers"]);
     await writeDatabase({ password: "a new one" });
-    const res = await request("POST", "/sync");
+    const res = await sync();
     expect(res.status).toBe(422);
     expect(res.body.code).toBe("wrong_key");
-    expect((await request("GET", "/status")).body.lastError).toMatch(
-      /master password/,
-    );
+    expect((await current()).lastError).toMatch(/master password/);
   });
 
   it("refreshes the group list from the database", async () => {
     await connectAndChoose([]);
     await writeDatabase({ groups: ["Lab"] });
-    const res = await request("POST", "/groups/refresh");
+    const res = await request("POST", db1("/groups/refresh"));
     expect(
-      res.body.availableGroups.map((g: { path: string }) => g.path),
+      byPath(res.body, DB_FILE).availableGroups.map(
+        (g: { path: string }) => g.path,
+      ),
     ).toContain("Passwords/Lab");
   });
 });
@@ -558,19 +746,17 @@ describe("disconnecting", () => {
 
   it("forgets the password and keeps imported credentials by default", async () => {
     await connectAndChoose(["Passwords/Servers"]);
-    await request("POST", "/sync");
-    expect((await request("DELETE", "/connect")).body).toEqual({
-      connected: false,
-    });
-    expect(await mock.ctx.secrets.get("unlock")).toBeNull();
+    await sync();
+    expect((await request("DELETE", db1())).body.databases).toEqual([]);
+    expect(await mock.ctx.secrets.get(`unlock-${dbId}`)).toBeNull();
     expect(stored()).toHaveLength(2);
-    expect((await request("GET", "/status")).body.connected).toBe(false);
+    expect((await request("GET", "/status")).body.databases).toEqual([]);
   });
 
   it("can delete the imported credentials too", async () => {
     await connectAndChoose(["Passwords/Servers"]);
-    await request("POST", "/sync");
-    await request("DELETE", "/connect?removeCredentials=true");
+    await sync();
+    await request("DELETE", db1("?removeCredentials=true"));
     expect(stored()).toEqual([]);
   });
 });
@@ -595,9 +781,9 @@ describe("password references", () => {
 
   it("is on for a new connection", async () => {
     const connected = await connect();
-    expect(connected.body.passwordReferences).toBe(true);
-    await request("PUT", "/config", { groups: ["Passwords/Servers"] });
-    await request("POST", "/sync");
+    expect(byPath(connected.body, DB_FILE).passwordReferences).toBe(true);
+    await request("PUT", db1("/config"), { groups: ["Passwords/Servers"] });
+    await sync();
     expect(stored().map((c) => c.password)).toEqual([
       `keepass://${DB}/password`,
       `keepass://${WEB}/password`,
@@ -607,7 +793,7 @@ describe("password references", () => {
 
   it("resolves a reference from the database when a host connects", async () => {
     await connectWithReferences();
-    await request("POST", "/sync");
+    await sync();
     expect(await resolve("user-1", `keepass://${WEB}/password`)).toBe("pw-web");
     // Lower case and the dashed form work too, and the file is read once for both.
     entries[1].password = "changed";
@@ -622,7 +808,7 @@ describe("password references", () => {
 
   it("reads the database again after the groups are saved", async () => {
     await connectWithReferences();
-    await request("PUT", "/config", {
+    await request("PUT", db1("/config"), {
       groups: ["Passwords/Servers"],
       passwordReferences: true,
     });
@@ -648,7 +834,7 @@ describe("password references", () => {
       resolve("user-2", `keepass://${WEB}/password`),
     ).rejects.toThrow(/not connected/);
 
-    await request("DELETE", "/connect");
+    await request("DELETE", db1());
     await expect(
       resolve("user-1", `keepass://${WEB}/password`),
     ).rejects.toThrow(/not connected/);
@@ -656,19 +842,19 @@ describe("password references", () => {
 
   it("writes the passwords back when turned off", async () => {
     await connectWithReferences();
-    await request("POST", "/sync");
-    await request("PUT", "/config", {
+    await sync();
+    await request("PUT", db1("/config"), {
       groups: ["Passwords/Servers"],
       passwordReferences: false,
     });
-    const res = await request("POST", "/sync");
+    const res = await sync();
     expect(res.body.lastSummary).toMatchObject({ updated: 2, created: 0 });
     expect(stored().map((c) => c.password)).toEqual(["pw-db", "pw-web"]);
   });
 
   it("refuses a value that is not true or false", async () => {
     await connectAndChoose(["Passwords/Servers"]);
-    const res = await request("PUT", "/config", {
+    const res = await request("PUT", db1("/config"), {
       groups: ["Passwords/Servers"],
       passwordReferences: "yes",
     });
@@ -693,7 +879,7 @@ describe("scheduled sync", () => {
 
   it("waits for the interval before syncing again", async () => {
     await connectAndChoose(["Passwords/Servers"]);
-    await request("POST", "/sync");
+    await sync();
     entries[0].password = "rotated";
     await writeDatabase();
     await mock.runScheduled();
@@ -717,7 +903,7 @@ describe("scheduled sync", () => {
     await connectAndChoose(["Passwords/Servers"]);
     fs.rmSync(path.join(root, DB_FILE));
     await expect(mock.runScheduled()).resolves.toBeUndefined();
-    const status = (await request("GET", "/status")).body;
+    const status = await current();
     expect(status.lastStatus).toBe("error");
     expect(status.lastError).toMatch(/was not found in the KeePass folder/);
   });
@@ -730,7 +916,7 @@ describe("lifecycle", () => {
     await connectAndChoose(["Passwords/Servers"]);
     for (const dispose of mock.disposals) await dispose();
     await activate(mock.ctx);
-    expect((await request("GET", "/status")).body.databasePath).toBe(DB_FILE);
+    expect((await current()).databasePath).toBe(DB_FILE);
   });
 });
 

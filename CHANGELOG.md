@@ -4,7 +4,7 @@
 
 ### Added
 
-- Connect a KeePass (.kdbx, KDBX 3.1 and 4) database from a folder on the Termix server, like a mounted share
+- Connect KeePass (.kdbx, KDBX 3.1 and 4) databases from a folder on the Termix server, like a mounted share. Each user can connect as many as they need, each with its own password, groups and sync status, and sync them one by one or all at once
 - Unlock it with a master password, a key file in that folder, an uploaded key file, or a password and key file together
 - Pick which groups to import, with the groups under them
 - Entries in those groups become Termix password credentials, in a folder per group and tagged `keepass` and `keepass:<uuid>`

@@ -5,7 +5,7 @@ import {
   useState,
   type FormEvent,
 } from "react";
-import { KeyRound, RefreshCw } from "lucide-react";
+import { Plus, KeyRound, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation, type TabProps } from "@termix-ssh/plugin-sdk/frontend";
 import {
@@ -27,12 +27,11 @@ import {
 import {
   errorMessage,
   fileToBase64,
+  type DatabaseStatus,
   type FolderListing,
   type KeePassApi,
   type Status,
 } from "./api";
-
-type Connected = Extract<Status, { connected: true }>;
 
 /** Matches the server's limit, so a wrong file is refused before upload. */
 const MAX_KEY_FILE_BYTES = 64 * 1024;
@@ -70,9 +69,12 @@ function Suggestions({
 function ConnectForm({
   api,
   onConnected,
+  onCancel,
 }: {
   api: KeePassApi;
   onConnected: (status: Status) => void;
+  /** Shown once a database is connected, to close the form again. */
+  onCancel?: () => void;
 }) {
   const { t } = useTranslation();
   const [listing, setListing] = useState<FolderListing | null>(null);
@@ -201,23 +203,36 @@ function ConnectForm({
           </Field>
         )}
         {error && <p className="text-destructive">{error}</p>}
-        <div>
+        <div className="flex gap-1">
           <Button type="submit" size="sm" disabled={busy || !ready}>
             {busy ? t("connect.connecting") : t("connect.submit")}
           </Button>
+          {onCancel && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={onCancel}
+            >
+              {t("connect.cancel")}
+            </Button>
+          )}
         </div>
       </form>
     </SectionCard>
   );
 }
 
-function ConnectedView({
+function DatabaseView({
   api,
   status,
+  syncIntervalMinutes,
   onStatus,
 }: {
   api: KeePassApi;
-  status: Connected;
+  status: DatabaseStatus;
+  syncIntervalMinutes: number;
   onStatus: (status: Status) => void;
 }) {
   const { t } = useTranslation();
@@ -270,7 +285,10 @@ function ConnectedView({
     } catch (e) {
       toast.error(errorMessage(e, t("error.generic")));
       // A failed sync still recorded why, so show it.
-      if (kind === "sync") onStatus(await api.status().catch(() => status));
+      if (kind === "sync") {
+        const fresh = await api.status().catch(() => null);
+        if (fresh) onStatus(fresh);
+      }
     } finally {
       setBusy(null);
     }
@@ -292,7 +310,7 @@ function ConnectedView({
     if (!ok) return;
     await run(
       "disconnect",
-      () => api.disconnect(removeCredentials),
+      () => api.disconnect(status.id, removeCredentials),
       t("account.disconnected"),
     );
   };
@@ -302,7 +320,7 @@ function ConnectedView({
   return (
     <div className="flex flex-col gap-2">
       <SectionCard
-        title={t("account.title")}
+        title={status.databasePath}
         icon={<KeyRound className="size-4" />}
         action={
           <div className="flex gap-1">
@@ -327,11 +345,6 @@ function ConnectedView({
         }
       >
         <StatRow
-          label={t("account.database")}
-          value={status.databasePath}
-          mono
-        />
-        <StatRow
           label={t("account.keyFile")}
           value={
             status.keyFilePath ??
@@ -351,7 +364,7 @@ function ConnectedView({
             size="sm"
             variant="ghost"
             disabled={busy !== null}
-            onClick={() => run("refresh", api.refreshGroups)}
+            onClick={() => run("refresh", () => api.refreshGroups(status.id))}
           >
             <RefreshCw className="size-3.5" />
             {t("groups.refresh")}
@@ -365,7 +378,7 @@ function ConnectedView({
           ) : (
             <div className="flex flex-col">
               {rows.map((row) => {
-                const id = `keepass-group-${row.path}`;
+                const id = `keepass-group-${status.id}-${row.path}`;
                 return (
                   <label
                     key={row.path}
@@ -414,7 +427,12 @@ function ConnectedView({
                 run(
                   "save",
                   () =>
-                    api.saveConfig(chosen, removeMissing, passwordReferences),
+                    api.saveConfig(
+                      status.id,
+                      chosen,
+                      removeMissing,
+                      passwordReferences,
+                    ),
                   t("groups.saved"),
                 )
               }
@@ -432,7 +450,7 @@ function ConnectedView({
           <Button
             size="sm"
             disabled={busy !== null || dirty || status.groups.length === 0}
-            onClick={() => run("sync", api.sync, t("sync.ok"))}
+            onClick={() => run("sync", () => api.sync(status.id), t("sync.ok"))}
           >
             {busy === "sync" ? t("sync.running") : t("sync.now")}
           </Button>
@@ -459,8 +477,8 @@ function ConnectedView({
             </p>
           )}
           <p className="text-muted-foreground">
-            {status.syncIntervalMinutes > 0
-              ? t("sync.interval", { count: status.syncIntervalMinutes })
+            {syncIntervalMinutes > 0
+              ? t("sync.interval", { count: syncIntervalMinutes })
               : t("sync.manualOnly")}
           </p>
         </div>
@@ -492,6 +510,8 @@ export function KeePassTab({ isVisible, api }: TabProps & { api: KeePassApi }) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<Status | null>(null);
   const [failed, setFailed] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -506,19 +526,79 @@ export function KeePassTab({ isVisible, api }: TabProps & { api: KeePassApi }) {
     if (isVisible) void load();
   }, [isVisible, load]);
 
+  const syncAll = async () => {
+    setSyncing(true);
+    try {
+      const result = await api.syncAll();
+      setStatus(result);
+      if (result.failed) {
+        toast.error(t("databases.syncAllFailed", { count: result.failed }));
+      } else {
+        toast.success(t("sync.ok"));
+      }
+    } catch (e) {
+      toast.error(errorMessage(e, t("error.generic")));
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const databases = status?.databases ?? [];
+  const syncable = databases.some((d) => d.groups.length > 0);
+
   return (
     <PanelShell
       icon={<KeyRound className="size-4" />}
       title={t("tab.title")}
       scroll
     >
-      <div className="p-2.5">
+      <div className="flex flex-col gap-2 p-2.5">
         {failed && <EmptyState title={t("error.load")} />}
-        {!failed && status && !status.connected && (
-          <ConnectForm api={api} onConnected={setStatus} />
-        )}
-        {!failed && status?.connected && (
-          <ConnectedView api={api} status={status} onStatus={setStatus} />
+        {!failed && status && (
+          <>
+            {databases.length > 0 && (
+              <div className="flex items-center gap-1">
+                <span className="flex-1 text-xs text-muted-foreground">
+                  {t("databases.count", { count: databases.length })}
+                </span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={adding}
+                  onClick={() => setAdding(true)}
+                >
+                  <Plus className="size-3.5" />
+                  {t("databases.add")}
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={syncing || !syncable}
+                  onClick={syncAll}
+                >
+                  {syncing ? t("sync.running") : t("databases.syncAll")}
+                </Button>
+              </div>
+            )}
+            {(databases.length === 0 || adding) && (
+              <ConnectForm
+                api={api}
+                onConnected={(next) => {
+                  setStatus(next);
+                  setAdding(false);
+                }}
+                onCancel={databases.length ? () => setAdding(false) : undefined}
+              />
+            )}
+            {databases.map((database) => (
+              <DatabaseView
+                key={database.id}
+                api={api}
+                status={database}
+                syncIntervalMinutes={status.syncIntervalMinutes}
+                onStatus={setStatus}
+              />
+            ))}
+          </>
         )}
       </div>
     </PanelShell>

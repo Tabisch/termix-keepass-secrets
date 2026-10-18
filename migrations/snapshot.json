@@ -1,7 +1,7 @@
 {
   "version": 1,
   "tables": {
-    "connections": {
+    "databases": {
       "columns": {
         "id": {
           "type": "id",
@@ -11,8 +11,7 @@
         "userId": {
           "type": "refUser",
           "length": 255,
-          "notNull": true,
-          "unique": true
+          "notNull": true
         },
         "databasePath": {
           "type": "text",
@@ -62,7 +61,14 @@
           "defaultNow": true
         }
       },
-      "indexes": []
+      "indexes": [
+        {
+          "name": "idx_p_keepass_secrets_databases_user_id",
+          "columns": [
+            "userId"
+          ]
+        }
+      ]
     },
     "items": {
       "columns": {
@@ -74,6 +80,10 @@
         "userId": {
           "type": "refUser",
           "length": 255,
+          "notNull": true
+        },
+        "databaseId": {
+          "type": "integer",
           "notNull": true
         },
         "entryId": {
@@ -105,9 +115,10 @@
       },
       "indexes": [
         {
-          "name": "uq_p_keepass_secrets_items_user_entry",
+          "name": "uq_p_keepass_secrets_items_database_entry",
           "columns": [
             "userId",
+            "databaseId",
             "entryId"
           ],
           "unique": true
