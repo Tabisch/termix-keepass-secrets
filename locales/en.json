@@ -1,0 +1,95 @@
+{
+  "plugin": {
+    "name": "KeePass",
+    "description": "Import and sync entries from KeePass databases into Termix credentials."
+  },
+  "tab": {
+    "title": "KeePass"
+  },
+  "connect": {
+    "title": "Connect a KeePass database",
+    "intro": "Pick a .kdbx file from the KeePass folder on the server and unlock it. Termix opens it again on every sync.",
+    "database": "Database",
+    "databasePlaceholder": "Pick a database",
+    "noDatabases": "There are no .kdbx files in the KeePass folder. Ask an admin to mount the share with your databases.",
+    "listFailed": "Could not list the KeePass folder",
+    "passwordLabel": "Master password",
+    "passwordHint": "Stored encrypted on the server so scheduled syncs can open the database. It is never shown again.",
+    "keyFile": "Key file",
+    "keyFileNone": "No key file",
+    "keyFileUpload": "Upload a key file",
+    "keyFileUploadLabel": "Key file to upload",
+    "keyFileUploadHint": "Stored encrypted on the server, like the password.",
+    "keyFileTooBig": "That file is too big to be a key file",
+    "submit": "Connect",
+    "connecting": "Connecting..."
+  },
+  "account": {
+    "title": "Database",
+    "database": "File",
+    "keyFile": "Key file",
+    "keyFileUploaded": "Uploaded",
+    "keyFileNone": "None",
+    "disconnect": "Disconnect",
+    "disconnectTitle": "Disconnect KeePass?",
+    "disconnectBody": "The master password is deleted from Termix. Credentials that were imported stay unless you remove them too.",
+    "disconnectKeep": "Disconnect",
+    "disconnectRemove": "Disconnect and delete imported credentials",
+    "disconnected": "KeePass disconnected"
+  },
+  "groups": {
+    "title": "Groups to import",
+    "hint": "Entries in these groups, and in the groups under them, become Termix credentials, in a folder named after their group.",
+    "empty": "No groups in this database. Make one in KeePass, then press Refresh.",
+    "refresh": "Refresh",
+    "items_one": "{{count}} entry",
+    "items_other": "{{count}} entries",
+    "missing": "Not in the database any more",
+    "removeMissing": "Delete credentials that leave these groups",
+    "removeMissingHint": "Only credentials this plugin imported are ever deleted.",
+    "passwordReferences": "Keep passwords in KeePass",
+    "passwordReferencesHint": "Credentials get a keepass:// reference instead of the password, and Termix reads the password from the database each time a host connects. No password is stored in Termix, but connecting needs the database file to be there. Takes effect on the next sync.",
+    "save": "Save",
+    "saved": "Groups saved"
+  },
+  "sync": {
+    "title": "Sync",
+    "now": "Sync now",
+    "running": "Syncing...",
+    "never": "Not synced yet",
+    "last": "Last sync",
+    "interval_one": "Syncs every minute.",
+    "interval_other": "Syncs every {{count}} minutes.",
+    "manualOnly": "Automatic sync is off. An admin can turn it on in Settings.",
+    "ok": "Synced",
+    "failed": "The last sync failed",
+    "summary": "{{created}} added, {{updated}} updated, {{unchanged}} unchanged, {{removed}} removed, {{skipped}} skipped",
+    "skippedHint": "Entries without a password are skipped."
+  },
+  "imported": {
+    "title": "Imported credentials",
+    "empty": "Nothing imported yet. Pick groups and press Sync now."
+  },
+  "error": {
+    "load": "Could not load the KeePass connection",
+    "generic": "Something went wrong"
+  },
+  "permissions": {
+    "use": {
+      "title": "Use KeePass",
+      "description": "Connect a KeePass database and import its entries as credentials."
+    }
+  },
+  "settings": {
+    "admin": {
+      "databaseRoot": {
+        "label": "KeePass folder",
+        "description": "The folder on the Termix server that holds the .kdbx files, like a share mounted into the container. People can only open files inside it."
+      },
+      "syncIntervalMinutes": {
+        "label": "Sync interval (minutes)",
+        "description": "How often every connected database is synced. 0 turns automatic sync off, so people sync by hand."
+      }
+    }
+  }
+}

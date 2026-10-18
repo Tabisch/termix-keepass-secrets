@@ -1,0 +1,87 @@
+{
+  "id": "keepass-secrets",
+  "name": "KeePass",
+  "version": "1.0.0",
+  "description": "Import and sync entries from KeePass databases into Termix credentials.",
+  "author": {
+    "name": "Tabisch",
+    "url": "https://github.com/Tabisch"
+  },
+  "license": "Apache-2.0",
+  "repository": "https://github.com/Tabisch/termix-keepass-secrets",
+  "docs": "https://github.com/Tabisch/termix-keepass-secrets/tree/main/docs",
+  "category": "Access & Security",
+  "icon": "KeyRound",
+  "features": [
+    "Open a KeePass (.kdbx) database from a folder on the server, like a mounted share",
+    "Unlock it with a master password, a key file or both",
+    "Pick which groups to import, with the groups under them",
+    "Entries become Termix password credentials, filed in a folder per group",
+    "Keeps them in sync on a schedule, or when you press Sync now",
+    "Removes credentials whose entry left the chosen groups, if you want",
+    "Or keeps passwords in KeePass: credentials hold a keepass:// reference, resolved when a host connects"
+  ],
+  "env": [
+    {
+      "name": "EMBEDDED_BACKEND_PORT",
+      "description": "Termix's own internal API port. The plugin calls the credentials API there. Only set when Termix itself is set to a different port.",
+      "default": "30001"
+    }
+  ],
+  "engine": {
+    "termix": ">=26.10.0",
+    "api": "^1.3"
+  },
+  "capabilities": [
+    "db:own",
+    "secrets:own",
+    "network:outbound",
+    "auth:provide",
+    "network:serve",
+    "ui:surface",
+    "users:impersonate"
+  ],
+  "contributes": {
+    "auth": {
+      "secretSchemes": ["keepass"]
+    },
+    "tabs": [
+      {
+        "id": "keepass",
+        "titleKey": "tab.title",
+        "icon": "KeyRound",
+        "openFrom": ["rail"]
+      }
+    ],
+    "permissions": [
+      {
+        "name": "use",
+        "titleKey": "permissions.use.title",
+        "descriptionKey": "permissions.use.description",
+        "defaultRoles": ["admin", "user"]
+      }
+    ],
+    "settings": {
+      "admin": [
+        {
+          "key": "databaseRoot",
+          "type": "string",
+          "labelKey": "settings.admin.databaseRoot.label",
+          "descriptionKey": "settings.admin.databaseRoot.description",
+          "default": "/keepass"
+        },
+        {
+          "key": "syncIntervalMinutes",
+          "type": "number",
+          "labelKey": "settings.admin.syncIntervalMinutes.label",
+          "descriptionKey": "settings.admin.syncIntervalMinutes.description",
+          "default": 60,
+          "min": 0,
+          "max": 10080
+        }
+      ]
+    }
+  },
+  "locales": "locales",
+  "platforms": ["linux", "win32", "darwin"]
+}

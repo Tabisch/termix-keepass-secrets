@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "tables": {
+    "connections": {
+      "columns": {
+        "id": {
+          "type": "id",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "userId": {
+          "type": "refUser",
+          "length": 255,
+          "notNull": true,
+          "unique": true
+        },
+        "databasePath": {
+          "type": "text",
+          "notNull": true
+        },
+        "keyFilePath": {
+          "type": "text"
+        },
+        "keyFileUploaded": {
+          "type": "integer",
+          "notNull": true,
+          "defaultValue": 0
+        },
+        "chosenGroups": {
+          "type": "json",
+          "notNull": true
+        },
+        "availableGroups": {
+          "type": "json"
+        },
+        "removeMissing": {
+          "type": "integer",
+          "notNull": true,
+          "defaultValue": 1
+        },
+        "passwordReferences": {
+          "type": "integer",
+          "notNull": true,
+          "defaultValue": 1
+        },
+        "lastSyncAt": {
+          "type": "timestamp"
+        },
+        "lastStatus": {
+          "type": "varchar",
+          "length": 16
+        },
+        "lastError": {
+          "type": "text"
+        },
+        "lastSummary": {
+          "type": "json"
+        },
+        "createdAt": {
+          "type": "timestamp",
+          "notNull": true,
+          "defaultNow": true
+        }
+      },
+      "indexes": []
+    },
+    "items": {
+      "columns": {
+        "id": {
+          "type": "id",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "userId": {
+          "type": "refUser",
+          "length": 255,
+          "notNull": true
+        },
+        "entryId": {
+          "type": "varchar",
+          "length": 64,
+          "notNull": true
+        },
+        "credentialId": {
+          "type": "integer",
+          "notNull": true
+        },
+        "groupPath": {
+          "type": "text",
+          "notNull": true
+        },
+        "title": {
+          "type": "text"
+        },
+        "contentHash": {
+          "type": "varchar",
+          "length": 64,
+          "notNull": true
+        },
+        "updatedAt": {
+          "type": "timestamp",
+          "notNull": true,
+          "defaultNow": true
+        }
+      },
+      "indexes": [
+        {
+          "name": "uq_p_keepass_secrets_items_user_entry",
+          "columns": [
+            "userId",
+            "entryId"
+          ],
+          "unique": true
+        },
+        {
+          "name": "idx_p_keepass_secrets_items_user_id",
+          "columns": [
+            "userId"
+          ]
+        }
+      ]
+    }
+  }
+}

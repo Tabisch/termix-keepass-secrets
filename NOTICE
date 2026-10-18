@@ -1,0 +1,6 @@
+Termix KeePass plugin
+Copyright 2026 Tabisch
+
+Reads KeePass databases with kdbxweb (https://github.com/keeweb/kdbxweb),
+licensed under the MIT License, and derives Argon2 keys with hash-wasm
+(https://github.com/Daninet/hash-wasm), licensed under the MIT License.
