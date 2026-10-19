@@ -40,7 +40,19 @@ Termix opens the database once to check the password and lists its groups.
 
 To connect another database, press Add database and do the same. Each database has its own master password, key file, groups and settings, and shows its own sync result. Connecting a database you already have again keeps its groups and takes the new password, which is how you update a changed master password. KDBX 3.1 and 4 files work, with AES, ChaCha20 and Argon2 (Argon2d and Argon2id).
 
-The master password, and a key file you upload, are stored encrypted on the server so scheduled syncs can open the database. They are never shown again. A key file picked from the folder is read from there on each sync.
+With Remember the master password on (the default), the master password, and a key file you upload, are stored encrypted on the server so scheduled syncs can open the database. They are never shown again. A key file picked from the folder is read from there on each sync.
+
+## Not storing the master password
+
+Turn Remember the master password off when you connect a database, or later under its groups, and the password is never written to Termix's database or disk:
+
+- It is kept in the memory of the Termix server only. An uploaded key file is kept the same way.
+- When Termix restarts (or the plugin is turned off and on), the database shows Locked. Type the master password, and upload the key file again if it has one, then press Unlock.
+- While a database is locked, nothing is synced from it, scheduled syncs skip it, and hosts whose credentials hold a `keepass://` reference to it can't connect. Credentials that store their password in Termix (Keep passwords in KeePass off) still work.
+- Press Lock to forget the password right away, for example before leaving.
+- Turning it off later deletes the stored password from the server. Turning it on stores the password you unlocked with.
+
+Admins can turn off Allow storing master passwords in Settings, under KeePass. Then nobody can store one: every database works as described above, and passwords stored before are deleted the next time they would be read, so those databases lock until their users unlock them.
 
 ## Pick groups
 
@@ -71,7 +83,7 @@ Keep passwords in KeePass, under the groups, is on to start with. It keeps the p
 
 - No password is written to Termix's database. Passwords are held in memory for about a minute after a connect, so connecting to several hosts at once opens the database only once.
 - A changed password in KeePass works on the next connect, without waiting for a sync.
-- Connecting needs the database file to be in the KeePass folder and the stored master password to open it. If it can't, the connect fails and says why.
+- Connecting needs the database file to be in the KeePass folder and the master password to open it, so a locked database (see above) can't resolve. If it can't, the connect fails and says why.
 - Only entries in the groups you import resolve. Untick a group, or disconnect, and its references stop working.
 - A reference resolves with the databases of the credential's owner, also when the credential is shared. It names no database: the one the entry was imported from is asked first, then the owner's other databases. So it keeps working when you disconnect a database and connect it again.
 - Turn it off and press Save to store the passwords in Termix instead: the next sync writes them into the credentials, and connecting no longer needs the file.
@@ -88,6 +100,7 @@ On each sync:
 - Entries that changed in KeePass are updated in Termix. KeePass wins: an edit you make to an imported credential in Termix is overwritten the next time that entry changes in KeePass.
 - If you delete an imported credential in Termix, it comes back the next time its entry changes in KeePass.
 - With Delete credentials that leave these groups on (the default), a credential whose entry left the chosen groups, or was deleted or moved to the recycle bin, is deleted from Termix. Only credentials this plugin imported are ever deleted. With it off, they stay and are no longer synced.
+- Locked databases are skipped until they are unlocked.
 - If a chosen group is gone from the database, its credentials are kept and the tab marks it Not in the database any more. That is often a renamed group: tick the new name, untick the old one and press Save.
 
 Each database shows when its last sync ran, what it changed, and why it failed if it did. One database failing, say because its file is gone, doesn't stop the others.
@@ -108,6 +121,7 @@ Anyone with Use KeePass can open any database in the KeePass folder they know th
 - There are no .kdbx files in the KeePass folder: the mount is empty, or the account Docker mounts it with can't read it.
 - The master password or key file does not open this database: check both. If the password was changed in KeePass, press Add database and connect the same file with the new password.
 - Not a KeePass database this plugin can read: the file is a KDBX 1 (`.kdb`) file or damaged. Save it as KDBX 4 in KeePass.
+- A database shows Locked, or connecting says "is locked since Termix restarted": it doesn't remember its master password. Unlock it in the KeePass tab.
 - Points outside the KeePass folder: the path is a symlink to somewhere else. Use the real file.
 - Termix refused to create a credential (403): you don't have the credentials permissions. Ask an admin.
 - Connecting fails with "KeePass entry ... is not in a group you import": the entry left your chosen groups, or has no password any more. Tick its group again, or pick another credential.

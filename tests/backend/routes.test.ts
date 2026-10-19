@@ -260,6 +260,7 @@ describe("connecting", () => {
   it("starts with no databases", async () => {
     expect((await request("GET", "/status")).body).toEqual({
       syncIntervalMinutes: 60,
+      allowRememberPassword: true,
       databases: [],
     });
   });
@@ -539,6 +540,179 @@ describe("several databases", () => {
     expect(await resolve("user-1", `keepass://${OPS_ENTRY}/password`)).toBe(
       "pw-switch",
     );
+  });
+});
+
+describe("not remembering the master password", () => {
+  beforeEach(() => start());
+
+  /** Disable and enable, which forgets everything in memory like a restart. */
+  async function restart() {
+    for (const dispose of mock.disposals) await dispose();
+    mock.disposals.length = 0;
+    await activate(mock.ctx);
+  }
+
+  const resolve = (reference: string) =>
+    mock.auth.secretResolvers.get("keepass")!("user-1", reference);
+
+  async function connectInMemory(extra: Record<string, unknown> = {}) {
+    const res = await connect({ rememberPassword: false, ...extra });
+    expect(res.status).toBe(200);
+    await request("PUT", db1("/config"), {
+      groups: ["Passwords/Servers"],
+      passwordReferences: true,
+      rememberPassword: false,
+    });
+    return res;
+  }
+
+  it("stores nothing, and works until a restart", async () => {
+    const res = await connectInMemory();
+    expect(byPath(res.body, DB_FILE)).toMatchObject({
+      rememberPassword: false,
+      locked: false,
+    });
+    expect(await mock.ctx.secrets.get(`unlock-${dbId}`)).toBeNull();
+    expect((await sync()).body.lastSummary.created).toBe(2);
+    expect(await resolve(`keepass://${WEB}/password`)).toBe("pw-web");
+  });
+
+  it("is locked after a restart, and nothing that needs it works", async () => {
+    await connectInMemory();
+    await restart();
+
+    expect((await current()).locked).toBe(true);
+    // Never synced, so it is due: the scheduler still leaves it alone.
+    await mock.runScheduled();
+    expect(mock.auth.userTokens).toEqual([]);
+    const res = await sync();
+    expect(res.status).toBe(423);
+    expect(res.body.code).toBe("locked");
+    // Locked is not a failed sync.
+    expect((await current()).lastStatus).toBeNull();
+    await expect(resolve(`keepass://${WEB}/password`)).rejects.toThrow(
+      /is locked since Termix restarted/,
+    );
+    const all = await request("POST", "/sync");
+    expect(all.body).toMatchObject({ failed: 0, locked: 1 });
+    expect((await current()).lastError).toBeNull();
+  });
+
+  it("unlocks again with the master password, still storing nothing", async () => {
+    await connectInMemory();
+    await restart();
+    const wrong = await request("POST", db1("/unlock"), { password: "nope" });
+    expect(wrong.status).toBe(422);
+    expect(wrong.body.code).toBe("wrong_key");
+    expect((await current()).locked).toBe(true);
+
+    const res = await request("POST", db1("/unlock"), {
+      password: MASTER_PASSWORD,
+    });
+    expect(res.status).toBe(200);
+    expect(byPath(res.body, DB_FILE).locked).toBe(false);
+    expect(await mock.ctx.secrets.get(`unlock-${dbId}`)).toBeNull();
+    expect((await sync()).status).toBe(200);
+    expect(await resolve(`keepass://${WEB}/password`)).toBe("pw-web");
+  });
+
+  it("asks for an uploaded key file again", async () => {
+    const keyFile = await kdbxweb.Credentials.createRandomKeyFile(2);
+    await writeDatabase({ keyFile });
+    const base64 = Buffer.from(keyFile).toString("base64");
+    await connectInMemory({ keyFile: base64 });
+    await restart();
+    const without = await request("POST", db1("/unlock"), {
+      password: MASTER_PASSWORD,
+    });
+    expect(without.status).toBe(400);
+    const res = await request("POST", db1("/unlock"), {
+      password: MASTER_PASSWORD,
+      keyFile: base64,
+    });
+    expect(res.status).toBe(200);
+    expect(await mock.ctx.secrets.get(`unlock-${dbId}`)).toBeNull();
+  });
+
+  it("locks on demand", async () => {
+    await connectInMemory();
+    const res = await request("POST", db1("/lock"));
+    expect(byPath(res.body, DB_FILE).locked).toBe(true);
+    await expect(resolve(`keepass://${WEB}/password`)).rejects.toThrow(
+      /locked/,
+    );
+  });
+
+  it("moves the password when the choice changes", async () => {
+    await connectAndChoose(["Passwords/Servers"]);
+    expect(await mock.ctx.secrets.get(`unlock-${dbId}`)).not.toBeNull();
+
+    await request("PUT", db1("/config"), {
+      groups: ["Passwords/Servers"],
+      rememberPassword: false,
+    });
+    expect(await mock.ctx.secrets.get(`unlock-${dbId}`)).toBeNull();
+    expect((await current()).locked).toBe(false);
+    await restart();
+    expect((await current()).locked).toBe(true);
+
+    await request("POST", db1("/unlock"), { password: MASTER_PASSWORD });
+    await request("PUT", db1("/config"), {
+      groups: ["Passwords/Servers"],
+      rememberPassword: true,
+    });
+    expect(await mock.ctx.secrets.get(`unlock-${dbId}`)).not.toBeNull();
+    await restart();
+    expect((await current()).locked).toBe(false);
+  });
+
+  it("can be forced for everyone by an admin", async () => {
+    await connectAndChoose(["Passwords/Servers"]);
+    const remembered = dbId;
+    await mock.ctx.settings.set("allowRememberPassword", false);
+
+    // Stored before: deleted, and locked until typed again.
+    const status = (await request("GET", "/status")).body;
+    expect(status.allowRememberPassword).toBe(false);
+    expect(byPath(status, DB_FILE)).toMatchObject({
+      rememberPassword: false,
+      locked: true,
+    });
+    expect(await mock.ctx.secrets.get(`unlock-${remembered}`)).toBeNull();
+
+    // Asking to remember is ignored.
+    writeFile(root, "other.kdbx", await buildDatabase({ entries }));
+    const res = await connect({
+      databasePath: "other.kdbx",
+      rememberPassword: true,
+    });
+    expect(byPath(res.body, "other.kdbx")).toMatchObject({
+      rememberPassword: false,
+      locked: false,
+    });
+    expect(await mock.ctx.secrets.get(`unlock-${dbId}`)).toBeNull();
+  });
+
+  it("refuses a value that is not true or false", async () => {
+    expect((await connect({ rememberPassword: "no" })).status).toBe(400);
+    await connect();
+    expect(
+      (
+        await request("PUT", db1("/config"), {
+          groups: [],
+          rememberPassword: "no",
+        })
+      ).status,
+    ).toBe(400);
+  });
+
+  it("answers 404 for a database that isn't connected", async () => {
+    expect(
+      (await request("POST", "/databases/999/unlock", { password: "x" }))
+        .status,
+    ).toBe(404);
+    expect((await request("POST", "/databases/999/lock")).status).toBe(404);
   });
 });
 

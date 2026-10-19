@@ -40,6 +40,8 @@ export async function runDueSyncs(
   let ran = 0;
   for (const database of await repo.listAllDatabases()) {
     if (!database.groups.length) continue;
+    // Locked until its user types the password: nothing to record.
+    if (!(await syncer.isUnlocked(database))) continue;
     const last = database.lastSyncAt ? Date.parse(database.lastSyncAt) : 0;
     if (now - last < minutes * 60_000) continue;
     ran += 1;

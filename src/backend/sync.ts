@@ -18,11 +18,7 @@ import type {
   Repository,
   SyncSummary,
 } from "./repository.js";
-
-/** The ctx.secrets key holding the acting user's master password for one database. */
-export function unlockSecret(databaseId: number): string {
-  return `unlock-${databaseId}`;
-}
+import type { StoredUnlock, Unlocks } from "./unlocks.js";
 
 /** Where the KeePass folder is when an admin did not set one. */
 export const DEFAULT_DATABASE_ROOT = "/keepass";
@@ -54,27 +50,10 @@ export function passwordReference(entryId: string): string {
 export class SyncError extends Error {
   constructor(
     message: string,
-    readonly code: "not_connected" | "busy",
+    readonly code: "not_connected" | "busy" | "locked",
   ) {
     super(message);
     this.name = "SyncError";
-  }
-}
-
-/** What ctx.secrets holds per database, as JSON. */
-export interface StoredUnlock {
-  password: string;
-  /** An uploaded key file, base64. */
-  keyFile?: string;
-}
-
-export function parseUnlock(raw: string | null): StoredUnlock | null {
-  if (!raw) return null;
-  try {
-    const value = JSON.parse(raw) as StoredUnlock;
-    return typeof value?.password === "string" ? value : null;
-  } catch {
-    return null;
   }
 }
 
@@ -175,27 +154,33 @@ const emptySummary = (): SyncSummary => ({
   skipped: 0,
 });
 
-export function createSyncer(deps: { ctx: PluginContext; repo: Repository }) {
-  const { ctx, repo } = deps;
+export function lockedError(database: Database): SyncError {
+  return new SyncError(
+    `${database.databasePath} is locked. Unlock it with its master password in the KeePass tab`,
+    "locked",
+  );
+}
+
+export function createSyncer(deps: {
+  ctx: PluginContext;
+  repo: Repository;
+  unlocks: Unlocks;
+}) {
+  const { ctx, repo, unlocks } = deps;
   const coreFor = (userId: string): Promise<CoreCredentials> =>
     coreCredentialsFor(ctx, userId);
   const running = new Set<number>();
 
-  /** Reads the acting user's master password for a database. Must run as that user. */
-  async function unlock(databaseId: number): Promise<StoredUnlock> {
-    const stored = parseUnlock(await ctx.secrets.get(unlockSecret(databaseId)));
-    if (!stored) {
-      throw new SyncError(
-        "The master password for this database is missing. Connect it again",
-        "not_connected",
-      );
-    }
+  /** The database's master password, remembered or typed since the last restart. */
+  async function unlock(database: Database): Promise<StoredUnlock> {
+    const stored = await unlocks.get(database);
+    if (!stored) throw lockedError(database);
     return stored;
   }
 
   async function syncOnce(database: Database): Promise<SyncSummary> {
     const { userId } = database;
-    const vault = await loadVault(ctx, database, await unlock(database.id));
+    const vault = await loadVault(ctx, database, await unlock(database));
     const selected = selectEntries(vault, database.groups);
     const summary = emptySummary();
 
@@ -302,6 +287,8 @@ export function createSyncer(deps: { ctx: PluginContext; repo: Repository }) {
     try {
       return await syncOnce(database);
     } catch (error) {
+      // Locked is a state the tab shows, not a failed sync.
+      if (error instanceof SyncError && error.code === "locked") throw error;
       await repo
         .updateDatabase(userId, databaseId, {
           lastSyncAt: new Date().toISOString(),
@@ -320,17 +307,30 @@ export function createSyncer(deps: { ctx: PluginContext; repo: Repository }) {
     coreFor,
     run,
 
+    /** Whether the database can be opened without asking its user. */
+    async isUnlocked(database: Database): Promise<boolean> {
+      return (await unlocks.get(database)) !== null;
+    },
+
     /**
      * Syncs every database of the user, one after another. One failing
      * database doesn't stop the others; each records its own result.
+     * Locked databases are skipped and counted.
      */
-    async runAll(
-      userId: string,
-    ): Promise<{ ok: number; failed: { id: number; error: unknown }[] }> {
+    async runAll(userId: string): Promise<{
+      ok: number;
+      locked: number;
+      failed: { id: number; error: unknown }[];
+    }> {
       let ok = 0;
+      let locked = 0;
       const failed: { id: number; error: unknown }[] = [];
       for (const database of await repo.listDatabases(userId)) {
         if (!database.groups.length) continue;
+        if (!(await unlocks.get(database))) {
+          locked += 1;
+          continue;
+        }
         try {
           await run(userId, database.id);
           ok += 1;
@@ -338,7 +338,7 @@ export function createSyncer(deps: { ctx: PluginContext; repo: Repository }) {
           failed.push({ id: database.id, error });
         }
       }
-      return { ok, failed };
+      return { ok, locked, failed };
     },
 
     /** Lists the database's groups, without saving anything. */

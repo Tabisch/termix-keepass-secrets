@@ -34,6 +34,13 @@ export interface ConnectInput {
   keyFilePath?: string;
   /** An uploaded key file, base64. */
   keyFile?: string;
+  /** Store the password on the server. Off, it is asked for after a restart. */
+  rememberPassword?: boolean;
+}
+
+export interface UnlockInput {
+  password: string;
+  keyFile?: string;
 }
 
 export interface DatabaseStatus {
@@ -41,6 +48,9 @@ export interface DatabaseStatus {
   databasePath: string;
   keyFilePath: string | null;
   keyFileUploaded: boolean;
+  rememberPassword: boolean;
+  /** Waits for its master password, typed again since Termix restarted. */
+  locked: boolean;
   groups: string[];
   availableGroups: GroupInfo[];
   removeMissing: boolean;
@@ -54,9 +64,13 @@ export interface DatabaseStatus {
 
 export interface Status {
   syncIntervalMinutes: number;
+  /** False when an admin forbids storing master passwords. */
+  allowRememberPassword: boolean;
   databases: DatabaseStatus[];
   /** Only after syncing everything: how many databases failed. */
   failed?: number;
+  /** Only after syncing everything: how many were skipped as locked. */
+  locked?: number;
 }
 
 type Api = TermixApp["api"];
@@ -72,14 +86,20 @@ export function createKeePassApi(api: Api) {
       groups: string[],
       removeMissing: boolean,
       passwordReferences: boolean,
+      rememberPassword: boolean,
     ) =>
       (
         await api.put<Status>(`/databases/${id}/config`, {
           groups,
           removeMissing,
           passwordReferences,
+          rememberPassword,
         })
       ).data,
+    unlock: async (id: number, input: UnlockInput) =>
+      (await api.post<Status>(`/databases/${id}/unlock`, input)).data,
+    lock: async (id: number) =>
+      (await api.post<Status>(`/databases/${id}/lock`)).data,
     refreshGroups: async (id: number) =>
       (await api.post<Status>(`/databases/${id}/groups/refresh`)).data,
     sync: async (id: number) =>

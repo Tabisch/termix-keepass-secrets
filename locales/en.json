@@ -14,16 +14,19 @@
     "noDatabases": "There are no .kdbx files in the KeePass folder. Ask an admin to mount the share with your databases.",
     "listFailed": "Could not list the KeePass folder",
     "passwordLabel": "Master password",
-    "passwordHint": "Stored encrypted on the server so scheduled syncs can open the database. It is never shown again.",
+    "passwordHint": "Checked by opening the database. It is never shown again.",
     "keyFile": "Key file",
     "keyFileNone": "No key file",
     "keyFileUpload": "Upload a key file",
     "keyFileUploadLabel": "Key file to upload",
-    "keyFileUploadHint": "Stored encrypted on the server, like the password.",
+    "keyFileUploadHint": "Kept like the master password.",
     "keyFileTooBig": "That file is too big to be a key file",
     "submit": "Connect",
     "connecting": "Connecting...",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "remember": "Remember the master password",
+    "rememberHint": "Stores it encrypted on the server, so scheduled syncs keep working after Termix restarts. Off, it is kept in memory only: after every restart the database is locked until you type the password here again, and its credentials can't connect until then.",
+    "rememberOff": "An admin turned off storing master passwords. The password is kept in memory only, so after every restart of Termix you type it here again."
   },
   "account": {
     "keyFile": "Key file",
@@ -34,7 +37,10 @@
     "disconnectBody": "Its master password is deleted from Termix. Credentials imported from it stay unless you remove them too.",
     "disconnectKeep": "Disconnect",
     "disconnectRemove": "Disconnect and delete imported credentials",
-    "disconnected": "Database disconnected"
+    "disconnected": "Database disconnected",
+    "password": "Master password",
+    "passwordRemembered": "Stored encrypted on the server",
+    "passwordMemory": "In memory only, asked for after a restart"
   },
   "groups": {
     "title": "Groups to import",
@@ -49,7 +55,8 @@
     "passwordReferences": "Keep passwords in KeePass",
     "passwordReferencesHint": "Credentials get a keepass:// reference instead of the password, and Termix reads the password from the database each time a host connects. No password is stored in Termix, but connecting needs the database file to be there. Takes effect on the next sync.",
     "save": "Save",
-    "saved": "Groups saved"
+    "saved": "Groups saved",
+    "rememberHint": "Off, the password is deleted from the server and kept in memory only, and you type it again after every restart. On, it is stored encrypted the next time the database is unlocked."
   },
   "sync": {
     "title": "Sync",
@@ -88,6 +95,10 @@
       "syncIntervalMinutes": {
         "label": "Sync interval (minutes)",
         "description": "How often every connected database is synced. 0 turns automatic sync off, so people sync by hand."
+      },
+      "allowRememberPassword": {
+        "label": "Allow storing master passwords",
+        "description": "Lets people store a database's master password encrypted on the server, so it syncs after a restart. Off, passwords are only ever kept in memory, every database locks when Termix restarts, and passwords stored before are deleted the next time they would be read."
       }
     }
   },
@@ -97,6 +108,18 @@
     "add": "Add database",
     "syncAll": "Sync all",
     "syncAllFailed_one": "{{count}} database failed to sync. It shows why.",
-    "syncAllFailed_other": "{{count}} databases failed to sync. Each shows why."
+    "syncAllFailed_other": "{{count}} databases failed to sync. Each shows why.",
+    "syncAllLocked_one": "{{count}} locked database was skipped. Unlock it to sync it.",
+    "syncAllLocked_other": "{{count}} locked databases were skipped. Unlock them to sync them."
+  },
+  "unlock": {
+    "locked": "Locked",
+    "hint": "Termix restarted, and this database doesn't remember its master password. Type it to sync again and to let its credentials connect.",
+    "keyFile": "Key file (upload it again)",
+    "submit": "Unlock",
+    "unlocking": "Unlocking...",
+    "done": "Database unlocked",
+    "lock": "Lock",
+    "lockedNow": "Database locked"
   }
 }

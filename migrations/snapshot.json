@@ -25,6 +25,11 @@
           "notNull": true,
           "defaultValue": 0
         },
+        "rememberPassword": {
+          "type": "integer",
+          "notNull": true,
+          "defaultValue": 1
+        },
         "chosenGroups": {
           "type": "json",
           "notNull": true

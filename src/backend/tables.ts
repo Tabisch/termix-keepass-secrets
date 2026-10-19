@@ -11,9 +11,10 @@ import {
 
 /**
  * One row per KeePass database a user connected; a user can connect many.
- * The master password (and an uploaded key file) is not here: it lives in
- * ctx.secrets under unlockSecret(id), encrypted with the installation key, so
- * a scheduled sync can read it while the user is signed out.
+ * The master password (and an uploaded key file) is not here: when
+ * remembered it lives in ctx.secrets under unlockSecret(id), encrypted with
+ * the installation key, so a scheduled sync can read it while the user is
+ * signed out. Otherwise it is only ever in memory (see unlocks.ts).
  */
 export const databases = defineTable(
   "databases",
@@ -28,8 +29,13 @@ export const databases = defineTable(
     databasePath: text().notNull(),
     /** A key file in the KeePass folder, relative to it. */
     keyFilePath: text(),
-    /** Whether a key file was uploaded instead; its bytes are in ctx.secrets. */
+    /** Whether a key file was uploaded instead; kept like the password. */
     keyFileUploaded: integer().notNull().default(0),
+    /**
+     * Store the master password encrypted on the server. Off, it is kept in
+     * memory only and has to be typed again after every restart.
+     */
+    rememberPassword: integer().notNull().default(1),
     /** Group paths to import, as the user picked them. */
     chosenGroups: json().notNull(),
     /** Every group seen in the database on the last read, for the picker. */

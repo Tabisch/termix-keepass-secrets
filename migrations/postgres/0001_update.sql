@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS "p_keepass_secrets_databases" (
   "database_path" text NOT NULL,
   "key_file_path" text,
   "key_file_uploaded" integer NOT NULL DEFAULT 0,
+  "remember_password" integer NOT NULL DEFAULT 1,
   "chosen_groups" text NOT NULL,
   "available_groups" text,
   "remove_missing" integer NOT NULL DEFAULT 1,

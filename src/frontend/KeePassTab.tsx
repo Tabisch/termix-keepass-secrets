@@ -68,15 +68,19 @@ function Suggestions({
 
 function ConnectForm({
   api,
+  allowRemember,
   onConnected,
   onCancel,
 }: {
   api: KeePassApi;
+  /** False when an admin forbids storing master passwords. */
+  allowRemember: boolean;
   onConnected: (status: Status) => void;
   /** Shown once a database is connected, to close the form again. */
   onCancel?: () => void;
 }) {
   const { t } = useTranslation();
+  const [remember, setRemember] = useState(allowRemember);
   const [listing, setListing] = useState<FolderListing | null>(null);
   const [listError, setListError] = useState<string | undefined>();
   const [databasePath, setDatabasePath] = useState("");
@@ -133,6 +137,7 @@ function ConnectForm({
             : keyFile
               ? { keyFile }
               : {}),
+          rememberPassword: allowRemember && remember,
         }),
       );
       setPassword("");
@@ -202,6 +207,16 @@ function ConnectForm({
             />
           </Field>
         )}
+        {allowRemember ? (
+          <SwitchRow
+            label={t("connect.remember")}
+            description={t("connect.rememberHint")}
+            checked={remember}
+            onChange={setRemember}
+          />
+        ) : (
+          <p className="text-muted-foreground">{t("connect.rememberOff")}</p>
+        )}
         {error && <p className="text-destructive">{error}</p>}
         <div className="flex gap-1">
           <Button type="submit" size="sm" disabled={busy || !ready}>
@@ -224,15 +239,103 @@ function ConnectForm({
   );
 }
 
+/** Asks for the master password of a database that doesn't remember it. */
+function UnlockForm({
+  api,
+  status,
+  onStatus,
+}: {
+  api: KeePassApi;
+  status: DatabaseStatus;
+  onStatus: (status: Status) => void;
+}) {
+  const { t } = useTranslation();
+  const [password, setPassword] = useState("");
+  const [keyFile, setKeyFile] = useState<string | undefined>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+
+  const pickKeyFile = async (file: File | undefined) => {
+    setError(undefined);
+    if (!file) return setKeyFile(undefined);
+    if (file.size > MAX_KEY_FILE_BYTES) {
+      setKeyFile(undefined);
+      return setError(t("connect.keyFileTooBig"));
+    }
+    setKeyFile(await fileToBase64(file));
+  };
+
+  const ready = status.keyFileUploaded
+    ? Boolean(keyFile)
+    : Boolean(password || status.keyFilePath);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!ready) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      onStatus(
+        await api.unlock(status.id, {
+          password,
+          ...(keyFile ? { keyFile } : {}),
+        }),
+      );
+      setPassword("");
+      toast.success(t("unlock.done"));
+    } catch (e) {
+      setError(errorMessage(e, t("error.generic")));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const fileId = `keepass-unlock-key-${status.id}`;
+  return (
+    <form
+      onSubmit={submit}
+      className="flex flex-col gap-2 border border-border p-2 text-xs"
+    >
+      <ListBadge tone="warning">{t("unlock.locked")}</ListBadge>
+      <p className="text-muted-foreground">{t("unlock.hint")}</p>
+      <SecretField
+        label={t("connect.passwordLabel")}
+        value={password}
+        onChange={setPassword}
+        disabled={busy}
+      />
+      {status.keyFileUploaded && (
+        <Field label={t("unlock.keyFile")} htmlFor={fileId}>
+          <input
+            id={fileId}
+            type="file"
+            disabled={busy}
+            className="text-xs"
+            onChange={(event) => void pickKeyFile(event.target.files?.[0])}
+          />
+        </Field>
+      )}
+      {error && <p className="text-destructive">{error}</p>}
+      <div>
+        <Button type="submit" size="sm" disabled={busy || !ready}>
+          {busy ? t("unlock.unlocking") : t("unlock.submit")}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 function DatabaseView({
   api,
   status,
   syncIntervalMinutes,
+  allowRemember,
   onStatus,
 }: {
   api: KeePassApi;
   status: DatabaseStatus;
   syncIntervalMinutes: number;
+  allowRemember: boolean;
   onStatus: (status: Status) => void;
 }) {
   const { t } = useTranslation();
@@ -242,19 +345,29 @@ function DatabaseView({
   const [passwordReferences, setPasswordReferences] = useState(
     status.passwordReferences,
   );
+  const [rememberPassword, setRememberPassword] = useState(
+    status.rememberPassword,
+  );
   const [busy, setBusy] = useState<
-    null | "save" | "sync" | "refresh" | "disconnect"
+    null | "save" | "sync" | "refresh" | "disconnect" | "lock"
   >(null);
 
   useEffect(() => {
     setChosen(status.groups);
     setRemoveMissing(status.removeMissing);
     setPasswordReferences(status.passwordReferences);
-  }, [status.groups, status.removeMissing, status.passwordReferences]);
+    setRememberPassword(status.rememberPassword);
+  }, [
+    status.groups,
+    status.removeMissing,
+    status.passwordReferences,
+    status.rememberPassword,
+  ]);
 
   const dirty =
     removeMissing !== status.removeMissing ||
     passwordReferences !== status.passwordReferences ||
+    rememberPassword !== status.rememberPassword ||
     chosen.length !== status.groups.length ||
     chosen.some((name, index) => name !== status.groups[index]);
 
@@ -324,6 +437,18 @@ function DatabaseView({
         icon={<KeyRound className="size-4" />}
         action={
           <div className="flex gap-1">
+            {!status.rememberPassword && !status.locked && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() =>
+                  run("lock", () => api.lock(status.id), t("unlock.lockedNow"))
+                }
+                disabled={busy !== null}
+              >
+                {t("unlock.lock")}
+              </Button>
+            )}
             <Button
               size="sm"
               variant="ghost"
@@ -354,6 +479,17 @@ function DatabaseView({
           }
           mono={Boolean(status.keyFilePath)}
         />
+        <StatRow
+          label={t("account.password")}
+          value={
+            status.rememberPassword
+              ? t("account.passwordRemembered")
+              : t("account.passwordMemory")
+          }
+        />
+        {status.locked && (
+          <UnlockForm api={api} status={status} onStatus={onStatus} />
+        )}
       </SectionCard>
 
       <SectionCard
@@ -419,6 +555,14 @@ function DatabaseView({
             checked={passwordReferences}
             onChange={setPasswordReferences}
           />
+          {allowRemember && (
+            <SwitchRow
+              label={t("connect.remember")}
+              description={t("groups.rememberHint")}
+              checked={rememberPassword}
+              onChange={setRememberPassword}
+            />
+          )}
           <div>
             <Button
               size="sm"
@@ -432,6 +576,7 @@ function DatabaseView({
                       chosen,
                       removeMissing,
                       passwordReferences,
+                      rememberPassword,
                     ),
                   t("groups.saved"),
                 )
@@ -449,7 +594,12 @@ function DatabaseView({
         action={
           <Button
             size="sm"
-            disabled={busy !== null || dirty || status.groups.length === 0}
+            disabled={
+              busy !== null ||
+              dirty ||
+              status.locked ||
+              status.groups.length === 0
+            }
             onClick={() => run("sync", () => api.sync(status.id), t("sync.ok"))}
           >
             {busy === "sync" ? t("sync.running") : t("sync.now")}
@@ -533,6 +683,8 @@ export function KeePassTab({ isVisible, api }: TabProps & { api: KeePassApi }) {
       setStatus(result);
       if (result.failed) {
         toast.error(t("databases.syncAllFailed", { count: result.failed }));
+      } else if (result.locked) {
+        toast.warning(t("databases.syncAllLocked", { count: result.locked }));
       } else {
         toast.success(t("sync.ok"));
       }
@@ -582,6 +734,7 @@ export function KeePassTab({ isVisible, api }: TabProps & { api: KeePassApi }) {
             {(databases.length === 0 || adding) && (
               <ConnectForm
                 api={api}
+                allowRemember={status.allowRememberPassword}
                 onConnected={(next) => {
                   setStatus(next);
                   setAdding(false);
@@ -595,6 +748,7 @@ export function KeePassTab({ isVisible, api }: TabProps & { api: KeePassApi }) {
                 api={api}
                 status={database}
                 syncIntervalMinutes={status.syncIntervalMinutes}
+                allowRemember={status.allowRememberPassword}
                 onStatus={setStatus}
               />
             ))}

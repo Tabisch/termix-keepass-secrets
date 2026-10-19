@@ -23,6 +23,8 @@ const servers = {
   databasePath: "team/servers.kdbx",
   keyFilePath: null,
   keyFileUploaded: false,
+  rememberPassword: true,
+  locked: false,
   groups: ["Passwords/Servers"],
   availableGroups: [
     { path: "Passwords/Personal", entries: 1 },
@@ -57,9 +59,10 @@ const ops = {
   items: [],
 };
 
-const connected = { syncIntervalMinutes: 60, databases: [servers] };
-const both = { syncIntervalMinutes: 60, databases: [servers, ops] };
-const empty = { syncIntervalMinutes: 60, databases: [] };
+const base = { syncIntervalMinutes: 60, allowRememberPassword: true };
+const connected = { ...base, databases: [servers] };
+const both = { ...base, databases: [servers, ops] };
+const empty = { ...base, databases: [] };
 
 /** connected, with the first database changed. */
 const withServers = (changes: Partial<typeof servers>) => ({
@@ -111,6 +114,7 @@ describe(`${manifest.id} activate`, () => {
         databasePath: "team/servers.kdbx",
         password: "",
         keyFilePath: "keys/team.keyx",
+        rememberPassword: true,
       }),
     );
     expect(await screen.findByText("team/servers.kdbx")).toBeTruthy();
@@ -182,6 +186,7 @@ describe(`${manifest.id} activate`, () => {
         groups: ["Passwords/Servers", "Passwords/Personal"],
         removeMissing: true,
         passwordReferences: true,
+        rememberPassword: true,
       }),
     );
   });
@@ -240,5 +245,96 @@ describe(`${manifest.id} activate`, () => {
 
     fireEvent.click(screen.getByText(locales.databases.syncAll));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/sync"));
+  });
+
+  it("connects without remembering the password", async () => {
+    const post = vi.fn(async () => ({ data: connected }));
+    rendered = await renderWithApp(plugin, {
+      manifest,
+      locales,
+      api: disconnectedApi(post) as never,
+    });
+    rendered.renderTab("keepass", { isVisible: true });
+    fireEvent.click(await screen.findByText("team/servers.kdbx"));
+    fireEvent.click(screen.getByText("keys/team.keyx"));
+    // The connect form's only switch.
+    fireEvent.click(screen.getByRole("switch"));
+    fireEvent.click(screen.getByText(locales.connect.submit));
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith(
+        "/databases",
+        expect.objectContaining({ rememberPassword: false }),
+      ),
+    );
+  });
+
+  it("says when an admin forbids remembering", async () => {
+    rendered = await renderWithApp(plugin, {
+      manifest,
+      locales,
+      api: {
+        get: vi.fn(async (path: string) => ({
+          data:
+            path === "/files"
+              ? listing
+              : { ...empty, allowRememberPassword: false },
+        })),
+      } as never,
+    });
+    rendered.renderTab("keepass", { isVisible: true });
+    expect(await screen.findByText(locales.connect.rememberOff)).toBeTruthy();
+    expect(screen.queryByText(locales.connect.remember)).toBeNull();
+  });
+
+  it("asks for the password of a locked database and unlocks it", async () => {
+    const post = vi.fn(async () => ({ data: connected }));
+    rendered = await renderWithApp(plugin, {
+      manifest,
+      locales,
+      api: {
+        get: vi.fn(async () => ({
+          data: withServers({ rememberPassword: false, locked: true }),
+        })),
+        post,
+      } as never,
+    });
+    rendered.renderTab("keepass", { isVisible: true });
+    expect(await screen.findByText(locales.unlock.locked)).toBeTruthy();
+    expect(screen.getByText(locales.sync.now).closest("button")!.disabled).toBe(
+      true,
+    );
+    const input = document.querySelector(
+      'input[type="password"]',
+    ) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "hunter2" } });
+    fireEvent.click(screen.getByText(locales.unlock.submit));
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/databases/1/unlock", {
+        password: "hunter2",
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText(locales.unlock.locked)).toBeNull(),
+    );
+  });
+
+  it("locks a database that keeps its password in memory", async () => {
+    const post = vi.fn(async () => ({
+      data: withServers({ rememberPassword: false, locked: true }),
+    }));
+    rendered = await renderWithApp(plugin, {
+      manifest,
+      locales,
+      api: {
+        get: vi.fn(async () => ({
+          data: withServers({ rememberPassword: false }),
+        })),
+        post,
+      } as never,
+    });
+    rendered.renderTab("keepass", { isVisible: true });
+    fireEvent.click(await screen.findByText(locales.unlock.lock));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/databases/1/lock"));
+    expect(await screen.findByText(locales.unlock.locked)).toBeTruthy();
   });
 });

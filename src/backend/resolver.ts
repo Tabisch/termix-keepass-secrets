@@ -1,14 +1,7 @@
-import type { PluginContext } from "@termix-ssh/plugin-sdk/backend";
 import { normalizeId, type Vault } from "./keepass/database.js";
 import type { Database, Repository } from "./repository.js";
-import {
-  parseUnlock,
-  SECRET_SCHEME,
-  selectEntries,
-  unlockSecret,
-  type DatabaseSource,
-  type StoredUnlock,
-} from "./sync.js";
+import { SECRET_SCHEME, selectEntries, type DatabaseSource } from "./sync.js";
+import type { StoredUnlock, Unlocks } from "./unlocks.js";
 
 /**
  * Resolves "keepass://<uuid>/password" references, the way the Secret Sources
@@ -41,15 +34,15 @@ export class SecretReferenceError extends Error {
 }
 
 export interface ResolverDeps {
-  ctx: PluginContext;
   repo: Repository;
+  unlocks: Pick<Unlocks, "get">;
   fetchVault: (source: DatabaseSource, unlock: StoredUnlock) => Promise<Vault>;
   now?: () => number;
 }
 
 export function createSecretResolver({
-  ctx,
   repo,
+  unlocks,
   fetchVault,
   now = Date.now,
 }: ResolverDeps) {
@@ -67,14 +60,10 @@ export function createSecretResolver({
   async function loadPasswords(
     database: Database,
   ): Promise<Map<string, string>> {
-    const stored = parseUnlock(
-      await ctx.asUser(database.userId, () =>
-        ctx.secrets.get(unlockSecret(database.id)),
-      ),
-    );
+    const stored = await unlocks.get(database);
     if (!stored) {
       throw new SecretReferenceError(
-        `The master password for ${database.databasePath} is missing`,
+        `KeePass database ${database.databasePath} is locked since Termix restarted. Unlock it with its master password in the KeePass tab`,
       );
     }
     const vault = await fetchVault(database, stored);
@@ -134,11 +123,12 @@ export function createSecretResolver({
           const password = (await passwordsFor(database)).get(id);
           if (password) return password;
         } catch (error) {
-          // Another database may still have it; say why if none does.
+          // Another database may still have it. If none does, the one that
+          // couldn't be read (locked, file gone) may, so say why.
           lastError = error;
         }
       }
-      if (lastError && importedFrom.size) {
+      if (lastError) {
         throw lastError instanceof Error
           ? lastError
           : new SecretReferenceError(String(lastError));

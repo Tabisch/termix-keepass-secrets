@@ -5,6 +5,7 @@ A [Termix](https://github.com/Termix-SSH/Termix) plugin that imports the entries
 - Opens `.kdbx` files (KDBX 3.1 and 4) from a folder on the Termix server, typically a Windows or DFS share mounted into the container by Docker
 - Connect as many databases per user as you need, each with its own password, groups and sync status
 - Unlocks them with a master password, a key file, or both. Works with no one signed in
+- Or never stores the master password: it is kept in memory only and asked for again after every restart. Admins can make that the rule for everyone
 - Pick which groups to import, with the groups under them
 - Each entry becomes a password credential, filed in a folder named after its group and tagged `keepass`
 - Each credential also gets a `keepass:<uuid>` tag that never changes, not on edits, moves or a reimport. The tab shows it under each credential
@@ -43,7 +44,7 @@ The Registry workflow signs any release that has no `.sig` yet and attaches the 
 ## How it works
 
 1. An admin sets the KeePass folder (`databaseRoot`, `/keepass` by default). Users pick a `.kdbx` file inside it. Paths are resolved with `realpath` and refused when they leave the folder, also through symlinks.
-2. Each user can connect many databases. Each one's master password, and an uploaded key file, are stored with `ctx.secrets`, encrypted with the Termix installation key, so scheduled syncs can read them.
+2. Each user can connect many databases. Each one's master password, and an uploaded key file, are stored with `ctx.secrets`, encrypted with the Termix installation key, so scheduled syncs can read them. With Remember the master password off they are only kept in the plugin's memory, so the database locks on every restart until its user unlocks it again.
 3. A sync reads the file and opens it with [kdbxweb](https://github.com/keeweb/kdbxweb), with Argon2 from [hash-wasm](https://github.com/Daninet/hash-wasm). Entries in the recycle bin are left out.
 4. Entries in the chosen groups are written to Termix's `/credentials` API as the user, with a short-lived session from `ctx.auth.issueUserToken`. The plugin keeps a table of which entry became which credential and a hash of what it wrote, so unchanged entries are not written again.
 5. With Keep passwords in KeePass on, the password written is `keepass://<uuid>/password`. The plugin registers the `keepass` scheme with `ctx.credentials.registerSecretResolver`, so when a host connects Termix hands it the reference and the credential's owner. It asks the database the entry was imported from first, then the user's other databases (each cached in memory for 30 seconds), and returns the password.

@@ -64,6 +64,13 @@ aren't obvious from the code, and anything that has bitten you before.
 - The secret `unlock-<databaseId>` (`unlockSecret`) is JSON `{ password, keyFile? }` (key file base64,
   only for uploads). A key file picked from the folder is stored as `databases.keyFilePath` and read on
   every open. `POST /databases` with a path the user already has updates that row and its secret.
+- `unlocks.ts` is the only place that reads or writes master passwords. `databases.rememberPassword` (on by
+  default) and the admin setting `allowRememberPassword` decide: remembered goes to ctx.secrets, otherwise a
+  Map made inside activate, so a restart or disable/enable locks the database. Locked means no unlock in
+  either place: `SyncError("locked")` (423), not recorded as a failed sync; the scheduler and Sync all skip
+  it; the resolver says it is locked. `POST /databases/:id/unlock` and `/lock` manage it. When an admin
+  forbids remembering, stored secrets are deleted once (per process) the next time they would be read.
+  Never write a non-remembered password anywhere, logs and the database included.
 - Items are unique per user, database and entry: copies of a database share UUIDs, so the same
   `keepass:<uuid>` tag can be on one credential per database.
 - `schedule.ts`: a one-minute tick that syncs databases older than the admin interval, each inside

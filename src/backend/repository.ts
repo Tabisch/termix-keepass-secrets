@@ -25,6 +25,8 @@ export interface Database {
   databasePath: string;
   keyFilePath: string | null;
   keyFileUploaded: boolean;
+  /** The master password is stored; else it's in memory until a restart. */
+  rememberPassword: boolean;
   groups: string[];
   availableGroups: GroupInfo[];
   removeMissing: boolean;
@@ -68,6 +70,7 @@ function toDatabase(row: Record<string, unknown>): Database {
     databasePath: String(row.databasePath),
     keyFilePath: (row.keyFilePath as string | null) ?? null,
     keyFileUploaded: Boolean(Number(row.keyFileUploaded)),
+    rememberPassword: Boolean(Number(row.rememberPassword)),
     groups: fromJson<string[]>(row.chosenGroups, []),
     availableGroups: fromJson<GroupInfo[]>(row.availableGroups, []),
     removeMissing: Boolean(Number(row.removeMissing)),
@@ -87,6 +90,9 @@ function toRow(values: DatabaseValues): Record<string, unknown> {
   if (values.keyFilePath !== undefined) row.keyFilePath = values.keyFilePath;
   if (values.keyFileUploaded !== undefined) {
     row.keyFileUploaded = values.keyFileUploaded ? 1 : 0;
+  }
+  if (values.rememberPassword !== undefined) {
+    row.rememberPassword = values.rememberPassword ? 1 : 0;
   }
   if (values.groups !== undefined) {
     row.chosenGroups = JSON.stringify(values.groups);
@@ -163,6 +169,7 @@ export function createRepository(
       await db.insert(databases).values({
         userId,
         keyFileUploaded: 0,
+        rememberPassword: 1,
         chosenGroups: "[]",
         removeMissing: 1,
         passwordReferences: 1,

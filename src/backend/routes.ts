@@ -12,10 +12,13 @@ import {
   credentialIdTag,
   databaseRoot,
   SyncError,
-  unlockSecret,
-  type StoredUnlock,
   type Syncer,
 } from "./sync.js";
+import {
+  rememberingAllowed,
+  type StoredUnlock,
+  type Unlocks,
+} from "./unlocks.js";
 
 const MAX_DATABASES = 50;
 const MAX_GROUPS = 200;
@@ -31,7 +34,12 @@ function errorMessage(error: unknown): string {
 /** Answers a failed file, database or sync call without spending the error budget. */
 function sendFailure(res: Response, error: unknown) {
   if (error instanceof SyncError) {
-    const status = error.code === "not_connected" ? 404 : 409;
+    const status =
+      error.code === "not_connected"
+        ? 404
+        : error.code === "locked"
+          ? 423
+          : 409;
     return res.status(status).json({ error: error.message, code: error.code });
   }
   if (error instanceof DatabaseFileError) {
@@ -53,6 +61,29 @@ function optionalPath(value: unknown): string | null | undefined {
   return value;
 }
 
+/**
+ * The password and uploaded key file in a connect or unlock body, or the
+ * answer to send when they are not valid.
+ */
+function readSecrets(
+  body: Record<string, unknown>,
+): { password: string; keyFile: string | null } | { error: string } {
+  const password = typeof body.password === "string" ? body.password : "";
+  const keyFile =
+    typeof body.keyFile === "string" && body.keyFile ? body.keyFile : null;
+  if (password.length > MAX_PASSWORD_LENGTH) {
+    return { error: "password is too long" };
+  }
+  if (
+    keyFile &&
+    (keyFile.length > (MAX_KEY_FILE_BYTES * 4) / 3 + 4 ||
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(keyFile))
+  ) {
+    return { error: "keyFile must be a base64 file of at most 64 KB" };
+  }
+  return { password, keyFile };
+}
+
 /** The :id route parameter, or null when it isn't one. */
 function databaseIdOf(req: Request): number | null {
   const id = Number((req.params as Record<string, string>).id);
@@ -70,6 +101,7 @@ export function registerRoutes(
   ctx: PluginContext,
   repo: Repository,
   syncer: Syncer,
+  unlocks: Unlocks,
   resolver: Pick<SecretResolver, "forget">,
 ): void {
   router.use(ctx.rbac.require("use") as never);
@@ -79,34 +111,41 @@ export function registerRoutes(
   async function status(userId: string) {
     const interval =
       (await ctx.settings.get<number>("syncIntervalMinutes")) ?? 60;
+    const allowRememberPassword = await rememberingAllowed(ctx);
     const items = await repo.listItems(userId);
-    const databases = (await repo.listDatabases(userId)).map(
-      (database: Database) => ({
-        id: database.id,
-        databasePath: database.databasePath,
-        keyFilePath: database.keyFilePath,
-        keyFileUploaded: database.keyFileUploaded,
-        groups: database.groups,
-        availableGroups: database.availableGroups,
-        removeMissing: database.removeMissing,
-        passwordReferences: database.passwordReferences,
-        lastSyncAt: database.lastSyncAt,
-        lastStatus: database.lastStatus,
-        lastError: database.lastError,
-        lastSummary: database.lastSummary,
-        items: items
-          .filter((item) => item.databaseId === database.id)
-          .map(({ title, groupPath, credentialId, entryId, updatedAt }) => ({
-            title,
-            group: groupPath,
-            credentialId,
-            tag: credentialIdTag(entryId),
-            updatedAt,
-          }))
-          .sort((a, b) => (a.title ?? "").localeCompare(b.title ?? "")),
-      }),
-    );
-    return { syncIntervalMinutes: interval, databases };
+    const rows = await repo.listDatabases(userId);
+    const unlocked = await Promise.all(rows.map((d) => syncer.isUnlocked(d)));
+    const databases = rows.map((database: Database, index: number) => ({
+      id: database.id,
+      databasePath: database.databasePath,
+      keyFilePath: database.keyFilePath,
+      keyFileUploaded: database.keyFileUploaded,
+      rememberPassword: database.rememberPassword && allowRememberPassword,
+      locked: !unlocked[index],
+      groups: database.groups,
+      availableGroups: database.availableGroups,
+      removeMissing: database.removeMissing,
+      passwordReferences: database.passwordReferences,
+      lastSyncAt: database.lastSyncAt,
+      lastStatus: database.lastStatus,
+      lastError: database.lastError,
+      lastSummary: database.lastSummary,
+      items: items
+        .filter((item) => item.databaseId === database.id)
+        .map(({ title, groupPath, credentialId, entryId, updatedAt }) => ({
+          title,
+          group: groupPath,
+          credentialId,
+          tag: credentialIdTag(entryId),
+          updatedAt,
+        }))
+        .sort((a, b) => (a.title ?? "").localeCompare(b.title ?? "")),
+    }));
+    return {
+      syncIntervalMinutes: interval,
+      allowRememberPassword,
+      databases,
+    };
   }
 
   /**
@@ -150,7 +189,7 @@ export function registerRoutes(
    * /plugin-api/keepass-secrets/databases:
    *   post:
    *     summary: Connect a KeePass database, or connect one again with a new password
-   *     description: Opens the database to check the password, then stores the password (and an uploaded key file) encrypted for the signed-in user. Neither is ever sent back. A path the user already connected keeps its chosen groups and gets the new password.
+   *     description: Opens the database to check the password, then keeps the password (and an uploaded key file) for the signed-in user, encrypted on the server or, with rememberPassword false, only in memory. Neither is ever sent back. A path the user already connected keeps its chosen groups and gets the new password.
    *     tags:
    *       - KeePass
    *     requestBody:
@@ -172,6 +211,9 @@ export function registerRoutes(
    *               keyFile:
    *                 type: string
    *                 description: An uploaded key file, base64. Ignored when keyFilePath is set
+   *               rememberPassword:
+   *                 type: boolean
+   *                 description: Store the master password (and an uploaded key file) encrypted on the server, so scheduled syncs work after a restart. Defaults to true. False, or an admin forbidding it, keeps them in memory only, so the database locks on every restart
    *     responses:
    *       200:
    *         description: Connected. The body is the new status, with the database's groups
@@ -186,10 +228,18 @@ export function registerRoutes(
    */
   router.post("/databases", async (req: Request, res: Response) => {
     const body = req.body ?? {};
-    const password = typeof body.password === "string" ? body.password : "";
     const keyFilePath = optionalPath(body.keyFilePath);
-    const keyFile =
-      typeof body.keyFile === "string" && body.keyFile ? body.keyFile : null;
+    const secrets = readSecrets(body);
+    if ("error" in secrets) return res.status(400).json(secrets);
+    const { password, keyFile } = secrets;
+    if (
+      body.rememberPassword !== undefined &&
+      typeof body.rememberPassword !== "boolean"
+    ) {
+      return res
+        .status(400)
+        .json({ error: "rememberPassword must be true or false" });
+    }
     if (
       typeof body.databasePath !== "string" ||
       !body.databasePath.trim() ||
@@ -203,18 +253,6 @@ export function registerRoutes(
       return res
         .status(400)
         .json({ error: "keyFilePath must be a path", code: "invalid_path" });
-    }
-    if (password.length > MAX_PASSWORD_LENGTH) {
-      return res.status(400).json({ error: "password is too long" });
-    }
-    if (
-      keyFile &&
-      (keyFile.length > (MAX_KEY_FILE_BYTES * 4) / 3 + 4 ||
-        !/^[A-Za-z0-9+/]+={0,2}$/.test(keyFile))
-    ) {
-      return res
-        .status(400)
-        .json({ error: "keyFile must be a base64 file of at most 64 KB" });
     }
     if (!password && !keyFilePath && !keyFile) {
       return res.status(400).json({
@@ -250,6 +288,9 @@ export function registerRoutes(
       const values = {
         ...source,
         keyFileUploaded: Boolean(stored.keyFile),
+        // An admin can forbid storing passwords for everyone.
+        rememberPassword:
+          body.rememberPassword !== false && (await rememberingAllowed(ctx)),
         availableGroups,
       };
       let id: number;
@@ -259,7 +300,7 @@ export function registerRoutes(
       } else {
         id = await repo.createDatabase(userId, values);
       }
-      await ctx.secrets.set(unlockSecret(id), JSON.stringify(stored));
+      await unlocks.save({ id, userId, ...values }, stored);
       resolver.forget(userId, id);
       ctx.log.info(`keepass database ${id} connected for user ${userId}`);
       res.json(await status(userId));
@@ -299,6 +340,9 @@ export function registerRoutes(
    *               passwordReferences:
    *                 type: boolean
    *                 description: Write keepass://<uuid>/password references into credentials instead of passwords, resolved from the database when a host connects. The next sync rewrites the credentials
+   *               rememberPassword:
+   *                 type: boolean
+   *                 description: Store the master password encrypted on the server. Off, it is kept in memory only, deleted from the server, and asked for again after every restart
    *     responses:
    *       200:
    *         description: Saved. The body is the new status
@@ -309,7 +353,8 @@ export function registerRoutes(
    */
   router.put("/databases/:id/config", async (req: Request, res: Response) => {
     const id = databaseIdOf(req);
-    const { groups, removeMissing, passwordReferences } = req.body ?? {};
+    const { groups, removeMissing, passwordReferences, rememberPassword } =
+      req.body ?? {};
     if (
       !Array.isArray(groups) ||
       groups.length > MAX_GROUPS ||
@@ -335,21 +380,45 @@ export function registerRoutes(
         .status(400)
         .json({ error: "passwordReferences must be true or false" });
     }
+    if (
+      rememberPassword !== undefined &&
+      typeof rememberPassword !== "boolean"
+    ) {
+      return res
+        .status(400)
+        .json({ error: "rememberPassword must be true or false" });
+    }
     const userId = actor();
-    if (id === null || !(await repo.getDatabase(userId, id))) {
-      return notConnected(res);
+    const database = id === null ? null : await repo.getDatabase(userId, id);
+    if (!database) return notConnected(res);
+    if (
+      rememberPassword !== undefined &&
+      rememberPassword !== database.rememberPassword
+    ) {
+      // Move the password it is unlocked with to its new place. A locked
+      // database just changes the setting and keeps waiting for it.
+      const current = await unlocks.get(database);
+      const next = {
+        ...database,
+        rememberPassword: rememberPassword && (await rememberingAllowed(ctx)),
+      };
+      await repo.updateDatabase(userId, database.id, {
+        rememberPassword: next.rememberPassword,
+      });
+      if (current) await unlocks.save(next, current);
+      else await unlocks.remove(database.id);
     }
     const unique = [
       ...new Set((groups as string[]).map((name) => name.trim())),
     ];
-    await repo.updateDatabase(userId, id, {
+    await repo.updateDatabase(userId, database.id, {
       groups: unique,
       ...(removeMissing !== undefined ? { removeMissing } : {}),
       ...(passwordReferences !== undefined ? { passwordReferences } : {}),
     });
     // References resolve against the chosen groups, so drop what the
     // resolver holds for the old ones.
-    resolver.forget(userId, id);
+    resolver.forget(userId, database.id);
     res.json(await status(userId));
   });
 
@@ -384,7 +453,7 @@ export function registerRoutes(
       try {
         const availableGroups = await syncer.groups(
           database,
-          await syncer.unlock(database.id),
+          await syncer.unlock(database),
         );
         await repo.updateDatabase(userId, database.id, { availableGroups });
         res.json(await status(userId));
@@ -393,6 +462,111 @@ export function registerRoutes(
       }
     },
   );
+
+  /**
+   * @openapi
+   * /plugin-api/keepass-secrets/databases/{id}/unlock:
+   *   post:
+   *     summary: Unlock a database whose master password is not remembered
+   *     description: Opens the database to check the password, then keeps it in memory until Termix restarts (or on the server, for a database set to remember it). Needed after every restart for databases that don't remember their password.
+   *     tags:
+   *       - KeePass
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema:
+   *           type: integer
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             properties:
+   *               password:
+   *                 type: string
+   *               keyFile:
+   *                 type: string
+   *                 description: The uploaded key file again, base64, for a database connected with one
+   *     responses:
+   *       200:
+   *         description: Unlocked. The body is the new status
+   *       400:
+   *         description: Missing password or key file
+   *       404:
+   *         description: The user has no database with this id, or the file is gone
+   *       422:
+   *         description: The password or key file is wrong
+   */
+  router.post("/databases/:id/unlock", async (req: Request, res: Response) => {
+    const id = databaseIdOf(req);
+    const userId = actor();
+    const database = id === null ? null : await repo.getDatabase(userId, id);
+    if (!database) return notConnected(res);
+    const secrets = readSecrets(req.body ?? {});
+    if ("error" in secrets) return res.status(400).json(secrets);
+    if (database.keyFileUploaded && !secrets.keyFile) {
+      return res.status(400).json({
+        error:
+          "This database was connected with an uploaded key file. Upload it again",
+        code: "invalid_key",
+      });
+    }
+    if (!secrets.password && !database.keyFilePath && !secrets.keyFile) {
+      return res
+        .status(400)
+        .json({ error: "Give the master password", code: "invalid_key" });
+    }
+    const stored: StoredUnlock = {
+      password: secrets.password,
+      ...(database.keyFileUploaded && secrets.keyFile
+        ? { keyFile: secrets.keyFile }
+        : {}),
+    };
+    try {
+      const availableGroups = await syncer.groups(database, stored);
+      await unlocks.save(database, stored);
+      await repo.updateDatabase(userId, database.id, { availableGroups });
+      resolver.forget(userId, database.id);
+      ctx.log.info(
+        `keepass database ${database.id} unlocked for user ${userId}`,
+      );
+      res.json(await status(userId));
+    } catch (error) {
+      return sendFailure(res, error);
+    }
+  });
+
+  /**
+   * @openapi
+   * /plugin-api/keepass-secrets/databases/{id}/lock:
+   *   post:
+   *     summary: Forget the master password of a database that doesn't remember it, now
+   *     description: The database stays connected and locked until it is unlocked again. A database that remembers its password is not changed.
+   *     tags:
+   *       - KeePass
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema:
+   *           type: integer
+   *     responses:
+   *       200:
+   *         description: Locked. The body is the new status
+   *       404:
+   *         description: The user has no database with this id
+   */
+  router.post("/databases/:id/lock", async (req: Request, res: Response) => {
+    const id = databaseIdOf(req);
+    const userId = actor();
+    const database = id === null ? null : await repo.getDatabase(userId, id);
+    if (!database) return notConnected(res);
+    unlocks.lock(database.id);
+    resolver.forget(userId, database.id);
+    res.json(await status(userId));
+  });
 
   /**
    * @openapi
@@ -436,17 +610,17 @@ export function registerRoutes(
    * /plugin-api/keepass-secrets/sync:
    *   post:
    *     summary: Sync every database of the signed-in user now
-   *     description: Databases with no groups chosen are skipped. One database failing doesn't stop the others; each records its own result in lastStatus and lastError.
+   *     description: Databases with no groups chosen, and locked ones, are skipped. One database failing doesn't stop the others; each records its own result in lastStatus and lastError.
    *     tags:
    *       - KeePass
    *     responses:
    *       200:
-   *         description: The new status. failed counts the databases whose sync failed
+   *         description: The new status. failed counts the databases whose sync failed, locked the ones skipped because they wait for their master password
    */
   router.post("/sync", async (_req: Request, res: Response) => {
     const userId = actor();
-    const { failed } = await syncer.runAll(userId);
-    res.json({ ...(await status(userId)), failed: failed.length });
+    const { failed, locked } = await syncer.runAll(userId);
+    res.json({ ...(await status(userId)), failed: failed.length, locked });
   });
 
   /**
@@ -492,7 +666,7 @@ export function registerRoutes(
         }
       }
     }
-    await ctx.secrets.delete(unlockSecret(id));
+    await unlocks.remove(id);
     await repo.deleteDatabase(userId, id);
     resolver.forget(userId, id);
     ctx.log.info(`keepass database ${id} disconnected for user ${userId}`);

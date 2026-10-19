@@ -16,6 +16,7 @@
     "Open KeePass (.kdbx) databases from a folder on the server, like a mounted share",
     "Connect as many databases as you need, each with its own password and groups",
     "Unlock it with a master password, a key file or both",
+    "Or never store the master password: it stays in memory and is asked for again after a restart",
     "Pick which groups to import, with the groups under them",
     "Entries become Termix password credentials, filed in a folder per group",
     "Keeps them in sync on a schedule, or when you press Sync now",
@@ -70,6 +71,13 @@
           "labelKey": "settings.admin.databaseRoot.label",
           "descriptionKey": "settings.admin.databaseRoot.description",
           "default": "/keepass"
+        },
+        {
+          "key": "allowRememberPassword",
+          "type": "boolean",
+          "labelKey": "settings.admin.allowRememberPassword.label",
+          "descriptionKey": "settings.admin.allowRememberPassword.description",
+          "default": true
         },
         {
           "key": "syncIntervalMinutes",
