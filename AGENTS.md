@@ -84,8 +84,5 @@ aren't obvious from the code, and anything that has bitten you before.
 - `json()` columns are plain text: the repository `JSON.stringify`s on write.
 - Use npm 11 to install. npm 10 crashes resolving the dev dependency peer set.
 - Releases: run the Release workflow (shared `plugin-release.yml` from Termix-Registry) from a `dev-X.Y.Z`
-  branch. `.github/workflows/registry.yml` then runs `scripts/build-registry.mjs` (copied from
-  Tabisch/termix-netbox-import) and pushes `index.json` to the `registry` branch, so the repo is its own
-  custom registry. It lists only releases whose `.tmxplug.sig` verifies against `TERMIX_PLUGIN_SIGNING_KEY`
-  and derives the index's `publicKey` from that secret. Changing the secret breaks every install.
-  `--sign-missing` signs and attaches a `.sig` for any release built without one.
+  branch. Tabisch/termix-registry lists the release within the hour and signs it with its own key. This repo
+  has no registry of its own.

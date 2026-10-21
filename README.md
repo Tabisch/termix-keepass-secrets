@@ -16,29 +16,26 @@ How to set it up and use it, including a Docker Compose example for mounting a D
 
 ## Install from GitHub
 
-This repo is its own Termix plugin registry. Add it once and Termix installs the plugin straight from the GitHub releases and offers every new version under Updates.
+This plugin is published in [Tabisch/termix-registry](https://github.com/Tabisch/termix-registry), one Termix plugin registry for all of Tabisch's plugins. Add it once and Termix installs the plugin straight from the GitHub releases and offers every new version under Updates.
 
 1. In Termix, open Plugins, Registries and press Add registry.
 2. Paste this URL and press Check:
 
    ```
-   https://raw.githubusercontent.com/Tabisch/termix-keepass-secrets/registry/index.json
+   https://raw.githubusercontent.com/Tabisch/termix-registry/registry/index.json
    ```
 
-3. Check that the key id Termix shows matches the one in the latest [Registry workflow run](https://github.com/Tabisch/termix-keepass-secrets/actions/workflows/registry.yml) summary, then press Trust and add.
+3. Check that the key id Termix shows matches the one in the latest [Registry workflow run](https://github.com/Tabisch/termix-registry/actions/workflows/registry.yml) summary, then press Trust and add.
 4. Open Browse, find KeePass and press Install. Approve the capabilities it asks for.
 
 You can also download `keepass-secrets-<version>.tmxplug` from [Releases](https://github.com/Tabisch/termix-keepass-secrets/releases) and install it from Plugins, Install from file, with Plugin developer mode on under Settings, General. A plugin installed that way doesn't update on its own.
 
 ### Releasing (maintainers)
 
-Releases are signed with the `TERMIX_PLUGIN_SIGNING_KEY` repository secret. Anyone with this key can publish plugins your registry's users will trust. If you change it later, everyone has to remove and add the registry again.
-
 1. Bump the version in `manifest.json`, `package.json` and a new `CHANGELOG.md` section.
-2. Make a `dev-X.Y.Z` branch from `main`, then run the Release workflow from it in Actions. It signs the `.tmxplug`, publishes the GitHub release and merges into `main`. Pick `beta` to publish `X.Y.Z-beta.N` instead, or `dry-run` to check without publishing.
-3. The Registry workflow runs after it and writes `index.json` to the `registry` branch. Its run summary shows the registry URL and the key id. Run it by hand from Actions at any time to rebuild the index.
+2. Make a `dev-X.Y.Z` branch from `main`, then run the Release workflow from it in Actions. It builds the `.tmxplug`, publishes the GitHub release and merges into `main`. Pick `beta` to publish `X.Y.Z-beta.N` instead, or `dry-run` to check without publishing.
 
-The Registry workflow signs any release that has no `.sig` yet and attaches the `.sig` to it, so every release gets listed. The index's public key is derived from the secret, so there is nothing else to keep in sync.
+[Tabisch/termix-registry](https://github.com/Tabisch/termix-registry) picks up the release within the hour, signs it with its own key and lists it.
 
 ## How it works
 
